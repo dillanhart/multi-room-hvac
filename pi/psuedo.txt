@@ -1,0 +1,156 @@
+// ======================= constants (ms, CLOCK_MONOTONIC) =======================
+SEC = 1000
+MIN = 60 * SEC
+
+SENSOR_WARMUP      = 3 * MIN
+READ_INTERVAL      = 30 * SEC
+MAX_SENSOR_FAILS   = 5            // 5 failed reads in a row (~2.5 min) → everything off
+
+MIN_ON_TIME        = 5 * MIN      // don't turn off sooner than this
+MIN_OFF_TIME       = 10 * MIN     // rest after turning off
+CHANGEOVER_DELAY   = 10 * MIN     // heat → AC or AC → heat
+MAX_ON_TIME        = 120 * MIN    // hard cap per run (not applied in emergency)
+PROGRESS_WINDOW    = 20 * MIN     // heat must raise temp / AC must lower it within this
+PROGRESS_MIN_DELTA = 1.0          // °F
+
+HYST               = 1.0          // °F
+MIN_HEAT           = 58           // emergency heat below this
+MIN_DEADBAND       = 3            // ac_set - heat_set must be at least this
+
+FAN_TRIGGER        = 2.0          // room this far outside setpoints → circulate
+FAN_CLEAR          = 1.0          // all rooms back within this → stop
+FAN_MAX_ON         = 60 * MIN
+
+// ======================= state =======================
+relay heat, cool, fan             // each has: on, on_at, off_at, progress_at, progress_temp
+fan_reason   = NONE               // NONE | CIRC
+fault        = NONE               // latched; cleared only by a client "reset" command
+sensor_fails = 0
+heat_set, ac_set, ac_activation   // loaded from settings, checked by validate_setpoints
+
+// ======================= relay helpers =======================
+bool set_relay(r, on):
+    if on && r == HEAT && cool.on: log("interlock: refused HEAT, COOL on"); return false
+    if on && r == COOL && heat.on: log("interlock: refused COOL, HEAT on"); return false
+
+    gpio_write(r.pin, on)
+    if gpio_read(r.pin) != on:                  // read back to confirm it changed
+        fault = RELAY_FAULT
+        gpio_write(HEAT.pin, 0); gpio_write(COOL.pin, 0); gpio_write(FAN.pin, 0)
+        log("relay readback mismatch"); return false
+
+    r.on = on
+    if on:  r.on_at = now; r.progress_at = now; r.progress_temp = temp
+    else:   r.off_at = now
+    log(r, on, reason)
+    return true
+
+all_off():
+    if heat.on: set_relay(heat, 0)
+    if cool.on: set_relay(cool, 0)
+    if fan.on:  set_relay(fan, 0)
+    fan_reason = NONE
+
+bool validate_setpoints(h, a):
+    return h >= MIN_HEAT + 2 && h <= 85
+        && a >= 60 && a <= 90
+        && a - h >= MIN_DEADBAND
+
+// ======================= startup =======================
+now = clock_now()
+gpio_write(HEAT.pin, 0); gpio_write(COOL.pin, 0); gpio_write(FAN.pin, 0)   // known state
+heat.off_at = cool.off_at = fan.off_at = now     // treat boot as "just turned off" (power blips)
+load_settings()
+if !validate_setpoints(heat_set, ac_set): use defaults (e.g. 68 / 76), log
+watchdog_open()                                  // /dev/watchdog or systemd WatchdogSec
+next_read = now + SENSOR_WARMUP
+
+// ======================= main loop =======================
+for (;;)
+    watchdog_kick()
+    now = clock_now()
+    timeout = clamp(next_read - now, 0, READ_INTERVAL)    // never negative
+    poll(listen_fd, timeout)
+    now = clock_now()
+
+    if client_ready:
+        handle_client()          // non-blocking + send/recv timeouts
+                                 // setpoint changes go through validate_setpoints
+                                 // "reset" clears fault
+        // no continue: fall through so clients can't stop sensor reads
+
+    if now < next_read: continue
+    next_read = now + READ_INTERVAL
+    control_step()
+
+// ======================= control =======================
+control_step():
+    // ---- 1. read ----
+    local = get_sensor_data()
+    if local == null:
+        sensor_fails++
+        if sensor_fails == MAX_SENSOR_FAILS: all_off(); log("main sensor dead")
+        return
+    sensor_fails = 0
+
+    office  = sock(office)       // null on timeout
+    bedroom = sock(bedroom)
+    temp = weight_temp_function(office, bedroom, local)   // rejects bad temps, night weights
+
+    if fault != NONE: all_off(); return
+
+    emergency = temp < MIN_HEAT
+
+    // ---- 2. decide what we WANT (hysteresis) ----
+    want_heat = heat.on ? temp < heat_set + HYST : temp <= heat_set - HYST
+    want_cool = ac_activation && (cool.on ? temp > ac_set - HYST : temp >= ac_set + HYST)
+    if emergency: want_heat = true; want_cool = false
+
+    // ---- 3. safety checks on running equipment ----
+    if heat.on:
+        if !emergency && now - heat.on_at >= MAX_ON_TIME:
+            want_heat = false; log("heat hit MAX_ON_TIME")
+        if now - heat.progress_at >= PROGRESS_WINDOW:
+            if temp - heat.progress_temp < PROGRESS_MIN_DELTA:
+                fault = HEAT_NO_RISE; all_off(); log(fault); return
+            heat.progress_at = now; heat.progress_temp = temp     // rolling window
+
+    if cool.on:
+        if now - cool.on_at >= MAX_ON_TIME:
+            want_cool = false; log("cool hit MAX_ON_TIME")
+        if now - cool.progress_at >= PROGRESS_WINDOW:
+            if cool.progress_temp - temp < PROGRESS_MIN_DELTA:
+                fault = COOL_NO_DROP; all_off(); log(fault); return
+            cool.progress_at = now; cool.progress_temp = temp
+
+    // ---- 4. turn OFF first (each on its own, not a trailing else) ----
+    if heat.on && !want_heat && now - heat.on_at >= MIN_ON_TIME:
+        set_relay(heat, 0)
+    if cool.on && !want_cool && (now - cool.on_at >= MIN_ON_TIME || emergency):
+        set_relay(cool, 0)
+
+    // ---- 5. then turn ON (set_relay updates .on, so checks below see current state) ----
+    if want_heat && !heat.on && !cool.on:
+        if emergency
+           || (now - heat.off_at >= MIN_OFF_TIME && now - cool.off_at >= CHANGEOVER_DELAY):
+            set_relay(heat, 1)
+
+    if want_cool && !cool.on && !heat.on
+       && now - cool.off_at >= MIN_OFF_TIME && now - heat.off_at >= CHANGEOVER_DELAY:
+        set_relay(cool, 1)
+
+    // ---- 6. circulation fan ----
+    rooms_bad = room_outside(office, FAN_TRIGGER) || room_outside(bedroom, FAN_TRIGGER)
+    rooms_ok  = !room_outside(office, FAN_CLEAR) && !room_outside(bedroom, FAN_CLEAR)
+    idle      = !heat.on && !cool.on
+
+    if fan_reason == CIRC:
+        if (rooms_ok && now - fan.on_at >= MIN_ON_TIME) || now - fan.on_at >= FAN_MAX_ON:
+            set_relay(fan, 0); fan_reason = NONE
+    else if !fan.on && idle && rooms_bad && now - fan.off_at >= MIN_OFF_TIME:
+        if set_relay(fan, 1): fan_reason = CIRC
+
+// a room that timed out (null) counts as "not outside", so it can't hold the fan on
+bool room_outside(room, margin):
+    if room == null: return false
+    return room.temp >= ac_set + margin || room.temp <= heat_set - margin

@@ -1,0 +1,11 @@
+# build output (the Pi builds; nothing compiled is tracked)
+pi/build/
+pi/thermostat_control
+pi/calibrate
+*.o
+
+# reference material kept for lookup (datasheets, pinouts, sensor data), not part of the project
+additional_files/
+
+# local tool settings
+.claude/
