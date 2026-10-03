@@ -92,6 +92,16 @@ Addresses are fixed by **DHCP reservations on the router**, not static IPs confi
 
 Each satellite keeps its SCD41 in periodic mode continuously and answers with the latest cached reading. It must never restart the sensor per request: the SCD41 reads ~7 °F high for ~3 minutes after every start (see [log.md](log.md), 2026-09-27).
 
+**Each satellite owns its own warm-up** and reports it, so a Pi reboot while the satellites keep running doesn't force a needless 3-minute wait. The reply carries an explicit status rather than nulls, because the Pi must treat "warming" (expected, temporary, not a failure) differently from "error" (counts toward failure limits):
+
+```json
+{"status": "ok",      "temp": 71.2, "humidity": 44.1, "co2": 612}
+{"status": "warming", "temp": null, "humidity": null, "co2": null}
+{"status": "error",   "temp": null, "humidity": null, "co2": null}
+```
+
+No reply is a timeout in `net_request` and never reaches the JSON. Satellites reuse the Pi's `sensor.c` unchanged with the ESP32 Sensirion HAL, including the same "already measuring → already warm" check, since an ESP32 reset may not cut the sensor's power either. Satellites send raw readings; **validation happens on the Pi** (see [Failure handling](#failure-handling)).
+
 ## Software
 
 ### Control loop
@@ -116,7 +126,7 @@ One single-threaded **event loop**. The loop runs forever, but it never busy-wai
 - **`poll()` timeout = time until the earliest deadline**, not a fixed sleep. Each periodic job keeps its own next-due time (control step ~30 s, satellite poll ~60 s, display clock ~1 s if shown). Multiple `timerfd`s are an equivalent option.
 - **The decision is a pure function**: `decide(state, readings, settings, now) → new state`. It touches no hardware, so the deadband and minimum-off-time logic can be tested on a desktop with fake readings.
 - **Display redraws only when something changed** (a dirty flag set by new readings, setpoint changes or relay changes), once per pass, and only the changed region. A full 320×240 RGB565 frame is ~150 KB, ~150 ms at the current 8 MHz SPI. Short timeouts (~33 ms) only during animation or touch drag.
-- **No blocking calls inside the loop.** `get_sensor_data()` currently sleeps up to 6 s waiting for data-ready — it must become a single check per tick. Satellite fetches go through libcurl's multi interface (plugs into `poll()`), or at minimum a short timeout. The HTTP server has to run inside this loop: Mongoose is designed for that, and libmicrohttpd supports it in "external select" mode. *Library choice still open.*
+- **No blocking calls inside the loop.** `get_sensor_data()` does a single data-ready check and never waits (done 2026-10-03). Satellite fetches go through libcurl's multi interface (plugs into `poll()`), or at minimum a short timeout. The HTTP server has to run inside this loop: Mongoose is designed for that, and libmicrohttpd supports it in "external select" mode. *Library choice still open.*
 - **On SIGTERM, switch every relay off before exiting** — the software half of the fail-safe.
 - All timing on `CLOCK_MONOTONIC`, never wall-clock time.
 
@@ -130,11 +140,21 @@ The real risk is the AC and furnace fighting each other — AC overshoots cold, 
 
 ### Failure handling
 
-Readings more than ~15 degrees off expectation are discarded rather than acted on. An unreachable weather API is not a failure needing fallback — its only role is to delay or skip decisions, so losing it just means reacting to raw indoor temperature.
+An unreachable weather API is not a failure needing fallback — its only role is to delay or skip decisions, so losing it just means reacting to raw indoor temperature.
 
-An unresponsive satellite (HTTP timeout) or one sending bad readings is dropped from the weighted average (see [Combining zones](#control-loop)). *The actual filtering rules are deferred.*
+#### Sensor validation (decided 2026-10-02)
 
-After the Pi's own SCD41 is started (power-up), control ignores it until readings settle — ~5 min, or until the rate of change is small. The startup transient reads high, which would otherwise call the AC right after boot. If the sensor is already measuring when the program starts (it keeps running after the program exits), skip the restart entirely.
+Control logic sees only trustworthy numbers: it checks one flag per sensor, `health.trusted`, and an untrusted sensor is dropped from the weighted average (see [Combining zones](#control-loop)). Everything else lives in one layer.
+
+- **Three layers.** `sensor.c` is a thin C driver: raw reading plus `read_ok` ("the I2C read worked", nothing more). `update_node()` in C++ validates *every* node the same way — the local SCD41 and both satellites — so the checks exist once. `control.cpp` checks `trusted`. Validation isn't in `sensor.c` because `sensor.c` only knows the local sensor, and some checks (no reply, stale data) are only visible from the Pi.
+- **Two flags, not one.** `read_ok` and `trusted` are different questions: a read can succeed and still return garbage.
+- **Range:** 50–110 °F.
+- **Rate of change vs the *previous* reading**, trusted or not, in °F per minute; more than 20 °F in 3 min is a failing sensor. Comparing with the last *trusted* value instead would lock a sensor out forever after a real step change (e.g. a satellite moved near a window). As a rate rather than a fixed delta, a sensor returning after an hour offline doesn't look like a jump.
+- **Re-trust after 3 consistent readings in a row**, so a spike that settles stays rejected and a real change is accepted after ~3 reads.
+- **Blips:** on a failed read, keep using the last good reading for up to 3 min, then drop the sensor. Avoids the ~2 °F jump in the weighted average each time a sensor flickers. A rolling per-room offset estimate was considered and rejected: occupancy (body heat) makes the offset unstable in exactly the room that matters, and the extra complexity isn't worth it — the system is already equalizing when a jump happens, and min on/off times cap any extra cycling.
+- **Weights when a sensor drops:** remaining weights are renormalized by dividing by their sum; their ratios are unchanged.
+- **Warm-up, local sensor:** the SCD41 can't report how long it has been on. `scd41_start()` returns whether it started measuring or found it already running (the ASC-disable command is rejected while measuring). Already running → already warm, `started_at = now - SENSOR_WARMUP`; fresh start or error → wait the full 3 min. `started_at` must always be set explicitly: its default 0 on the monotonic clock means "since boot", i.e. falsely warm. Known gap: a crash within 3 min of a fresh start, then a restart, is treated as warm while the sensor still reads a few degrees high. Fix if needed: record the start time in `/run` (cleared on reboot) and wait the full warm-up when it's missing.
+- **Warm-up, satellites:** reported by the satellite (`"status": "warming"`), see [Satellites](#satellites).
 
 ### Persistent settings
 
@@ -180,6 +200,8 @@ At minimum: timestamp, per-zone temp/humidity/CO2, current mode (AC/furnace/idle
 **Satellites** run a lightweight program that serves their latest reading over HTTP when the Pi asks.
 
 **The Pi** is the central hub: polls the satellites, reads its own sensor, fetches outside weather, drives the HVAC relays and the local display, and accepts commands from the web UI and physical buttons. No Docker — the project is simple and needs direct board IO, so containerizing costs more than it returns.
+
+**Development** happens on the Ubuntu server, not on the Pi (decided 2026-10-02). `pi/` in the project folder mirrors `~/thermostat` on the Pi exactly and is the source of truth; `deploy.sh` rsyncs it over SSH and builds/runs it there. The Pi carries only what it runs — no images, docs or datasheets. A script beat deploying via GitHub: no credentials on the Pi, no commit per test. GitHub ([dillanhart/multi-room-hvac](https://github.com/dillanhart/multi-room-hvac)) is the portfolio record only. IntelliSense checks against a copy of the Pi's headers (`.sysroot/`), so a library missing on the Pi shows as an error on the dev machine, and `./deploy.sh build` compiles on the Pi as the final word.
 
 **The Ubuntu server** hosts the web UI. This adds complexity, for two reasons: it allows a public demo site for portfolio purposes, and if the self-hosted Alexa idea goes ahead it'll need the Ollama install already running there — so working out cross-machine communication now makes that expansion easier.
 

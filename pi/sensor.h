@@ -14,19 +14,25 @@
 extern "C" {
 #endif
 
-// One reading from the SCD41. Check valid before using the other fields.
+// One reading from the SCD41. Check read_ok before using the other fields.
 struct sensor_result {
-    float temperature;  // degrees F
-    float humidity;     // % relative humidity
+    float temp;  // degrees F
+    float hum;     // % relative humidity
     int CO2;            // parts per million
-    int valid;          // 1 = reading OK, 0 = read failed
+    int read_ok;          // 1 = reading OK, 0 = read failed
+};
+
+enum scd41_start_status {
+    SCD41_ERROR = -1,
+    SCD41_STARTED = 0,          // was idle, measurement just started
+    SCD41_ALREADY_RUNNING = 1,  // an earlier run left it measuring
 };
 
 // Open the I2C bus and make sure the SCD41 is measuring.
-// Returns 0 on success, or the library's error code.
+// Returns one of enum scd41_start_status.
 int scd41_start(void);
 
-// Read CO2, temperature and humidity. Starts the sensor on first use.
+// Read CO2, temperature and humidity without waiting. Call scd41_start() once before this.
 struct sensor_result get_sensor_data(void);
 
 #ifdef __cplusplus

@@ -17,9 +17,35 @@
 #include <stdbool.h>        // bool, true, false
 #include <time.h>           // clock_gettime
 #include <unistd.h>         // sleep
+#include <vector>
 
 #include "sensor.h"
 #include "relay.h"
+#include "control.h"
+
+// all times in milliseconds (SEC, MIN and the sensor validation constants are in control.h)
+
+// make sure sensor is reading correctly and prevent short cycling HVAC
+constexpr int READ_INTERVAL = MIN;
+constexpr int MAX_SENSOR_FAILS = 5;
+
+// avoid short cycling and constant running
+constexpr int MIN_ON_TIME = 5 * MIN;
+constexpr int MIN_OFF_TIME = 10 * MIN;
+constexpr int MAX_RUN_TIME = 120 * MIN;
+
+// make sure heat and sensor are working together
+constexpr int PROGRESS_WINDOW = 20 * MIN;
+constexpr float PROGRESS_MIN_DELTA = 1; // temp must change by at least 1 degree within 20 mins
+
+// make sure the AC and Heat values are far enough apart
+constexpr float HYST = 1;
+constexpr float MIN_HEAT = 60;
+constexpr float MIN_DEAD_BAND = 3;
+
+// temp delta for fan to turn on and turn off
+constexpr float FAN_TRIGGER = 2;
+constexpr float FAN_CLEAR = 1;
 
 /*
  * now_ms - milliseconds since boot.
@@ -37,50 +63,53 @@ static long long now_ms(void) {
  * Returns 1 if the relay pins can't be claimed.
  */
 int main(void) {
-    int sec = 1000;
-    int min = 60 * sec;
-
     long long now = now_ms();
 
-    // make sure sensor is reading correctly and prevent short cycling HVAC
-    long long SENSOR_WARMUP = now + min * 3;
-    int READ_INTERVAL = min;
-    int MAX_SENSOR_FAILS = 5;
-    int sensor_fails = 0;
-    
-    // avoid short cycling and constant running
-    int MIN_ON_TIME = 5 * min;
-    int MIN_OFF_TIME = 10 * min;
-    int MAX_RUN_TIME = 120 * min;
-    int cycle_start = 0;
-    int cycle_end = 0;
+    // [[maybe_unused]]: not wired in yet; remove the tag once each is used
+    [[maybe_unused]] int sensor_fails = 0;
+    [[maybe_unused]] long long cycle_start = 0;  // ms timestamps: long long, int overflows after ~24 days
+    [[maybe_unused]] long long cycle_end = 0;
 
-    // make sure heat and sensor are working together
-    int PROGRESS_WNIDOW = 20 * min;
-    float PROGRESS_MIN_DELTA = 1; // temp must change by at least 1 degree within 20 mins
-
-
-    // make sure the AC and Heat values are far enough apart
-    float HYST = 1;
+    // settings: these will change at runtime (display / web UI)
     float ac_set = 73;
     float heat_set = 70;
-    bool ac_activation = true;
-    float min_heat = 60;
-    float MIN_DEAD_BAND = 3;
-
-    // temp delta for fan to turn on and turn off
-    float FAN_TRIGGER = 2;
-    float FAN_CLEAR = 1;
+    [[maybe_unused]] bool ac_activation = true;
 
     // Claim the three relay pins as outputs (all relays start off)
     if (relays_init())
         return 1;
 
-    scd41_start();
-    for(;;){
-        sensor_result main_data = get_sensor_data();
+    int start_status = scd41_start();
 
-        std::string command = "fuck me how do I program sometimes I swear to god this shit is so fucking confusing sometimes especially now that I am";
+
+    // Setup three sensor data
+    //nodes[0] = main, [1] = office, [2] = bed
+
+    std::vector<sensor_node> nodes = {
+    {.name = "main", .weight_day = 10, .weight_night = 8},
+    {.name = "office", .weight_day = 6, .weight_night = 4},
+    {.name = "bed", .weight_day = 4, .weight_night = 8}
+    };
+
+    // The SCD41 can't report how long it has been on. If an earlier run left it
+    // measuring it's already warm; otherwise (fresh start or error) wait the full warm-up.
+    nodes[0].health.started_at = (start_status == SCD41_ALREADY_RUNNING)
+                                 ? now - SENSOR_WARMUP
+                                 : now;
+
+
+    for(;;){
+        now = now_ms();
+
+        sensor_result reading = get_sensor_data();
+        update_node(nodes[0], reading, local_sensor_status(reading, nodes[0].health.started_at, now), now);
+
+        std::string command = get_HVAC_command(nodes, heat_set, ac_set, FAN_TRIGGER);
+        const sensor_health& h = nodes[0].health;
+        printf("%s | main %.1f F, %s, %s (%d good in a row)\n", command.c_str(), nodes[0].data.temp,
+               h.status == sensor_status::ok ? "ok" : h.status == sensor_status::warming ? "warming" : "error",
+               h.trusted ? "trusted" : "untrusted", h.consistent);
+        sleep(10);
         }
     return 0;
 }

@@ -1,0 +1,31 @@
+{
+    // IntelliSense checks against the Pi's headers (.sysroot, from ./deploy.sh sysroot),
+    // not this machine's: a header missing on the Pi shows as an error here.
+    // includePath order matches `g++ -E -v` on the Pi (Debian 13, GCC 14, aarch64).
+    "configurations": [
+        {
+            "name": "Pi (aarch64, GCC 14)",
+            "compilerPath": "",
+            "intelliSenseMode": "linux-gcc-arm64",
+            "cStandard": "gnu17",
+            "cppStandard": "c++20",
+            "includePath": [
+                "${workspaceFolder}/pi",
+                "${workspaceFolder}/pi/embedded-i2c-scd4x",
+                "${workspaceFolder}/.sysroot/usr/include/c++/14",
+                "${workspaceFolder}/.sysroot/usr/include/aarch64-linux-gnu/c++/14",
+                "${workspaceFolder}/.sysroot/usr/include/c++/14/backward",
+                "${workspaceFolder}/.sysroot/usr/lib/gcc/aarch64-linux-gnu/14/include",
+                "${workspaceFolder}/.sysroot/usr/include/aarch64-linux-gnu",
+                "${workspaceFolder}/.sysroot/usr/include"
+            ],
+            "defines": [
+                "__GNUC__=14",
+                "__GNUC_MINOR__=2",
+                "__linux__",
+                "__aarch64__"
+            ]
+        }
+    ],
+    "version": 4
+}

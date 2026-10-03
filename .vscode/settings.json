@@ -5,7 +5,11 @@
         "**/.hg": true,
         "**/.jj": true,
         "**/.DS_Store": true,
-        "**/Thumbs.db": true
+        "**/Thumbs.db": true,
+        ".sysroot": true
+    },
+    "search.exclude": {
+        ".sysroot": true
     },
     "hide-files.files": []
 }

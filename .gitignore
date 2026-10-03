@@ -7,5 +7,8 @@ pi/calibrate
 # reference material kept for lookup (datasheets, pinouts, sensor data), not part of the project
 additional_files/
 
+# copy of the Pi's headers for IntelliSense (./deploy.sh sysroot)
+.sysroot/
+
 # local tool settings
 .claude/

@@ -147,8 +147,8 @@ static void send_status(int client, const struct sensor_result *latest) {
     int len;
 
     len = snprintf(buf, sizeof(buf),
-                   "temp=%.1f humidity=%.1f co2=%d valid=%d heat=%s cool=%s fan=%s\n",
-                   latest->temperature, latest->humidity, latest->CO2, latest->valid,
+                   "temp=%.1f humidity=%.1f co2=%d read_ok=%d heat=%s cool=%s fan=%s\n",
+                   latest->temp, latest->hum, latest->CO2, latest->read_ok,
                    relay_get(RELAY_HEAT) ? "on" : "off",
                    relay_get(RELAY_COOL) ? "on" : "off",
                    relay_get(RELAY_FAN) ? "on" : "off");

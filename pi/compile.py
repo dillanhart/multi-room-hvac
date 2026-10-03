@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 
 SCD4X = "embedded-i2c-scd4x"
 BUILD = "build"  # object files go here
@@ -35,4 +36,6 @@ for src in CPP_SOURCES:
 objects = [obj_path(src) for src in C_SOURCES + CPP_SOURCES]
 subprocess.run(["g++", "-o", "thermostat_control", *objects, "-lgpiod"], check=True)
 
-subprocess.run(["./thermostat_control"], check=True)
+# --no-run: build only (used by deploy.sh build)
+if "--no-run" not in sys.argv:
+    subprocess.run(["./thermostat_control"], check=True)

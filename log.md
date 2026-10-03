@@ -481,3 +481,79 @@ Open: GET polling interval (a few seconds); show "controller offline" when GET f
 - Fill in `control.h`; fix the weighted average and missing return; move decision constants from `main()` into `control.cpp`.
 - `main.cpp`: fetch office/bedroom via `net_request`, call `get_HVAC_command`, act via `relay_set` / `all_off`.
 - Implement the safety rules from `psuedo.txt`: min on/off times, heat/cool interlock, progress faults, emergency heat, fan circulation.
+
+---
+
+## 2026-10-02 (later) — Dev workflow, GitHub repo, first clean build
+
+### Pi ↔ dev-server sync
+
+- Dev server ↔ Pi SSH added: dedicated key `~/.ssh/id_ed25519_thermostat`, `Host thermostat` in `~/.ssh/config`, key in both `root` and `thermostat` `authorized_keys`. Over Tailscale (node `thermostat`).
+- Pi project moved out of the home dir into **`~/thermostat`**, `chown -R thermostat` (most files were root-owned from editing as root; `build/` was unwritable by `thermostat`).
+- **`pi/` on the dev server is now the source of truth.** Images, docs, datasheets never go to the Pi.
+- `deploy.sh` (written by Claude): rsync `pi/` → Pi with `--delete`, excludes `build/` and binaries. `push` / `diff` (dry run) / `build` (no run) / `run` / `sysroot`. `compile.py` got `--no-run` for `build`.
+- **Rule: don't edit on the Pi** — the next deploy overwrites it. `./deploy.sh diff` first if unsure.
+
+### IntelliSense against the Pi's headers
+
+- Dev server has no `libgpiod` → false errors, and no way to see what the Pi actually has.
+- `./deploy.sh sysroot` copies the Pi's compiler include paths (from `g++ -E -v`) into `.sysroot/` (31 MB, gitignored). `.vscode/c_cpp_properties.json` points IntelliSense there: aarch64, GCC 14, C++20. A header missing on the Pi now shows as missing here. Rerun after installing a `-dev` package on the Pi.
+- **Gotcha:** first copy gave an error on `#include <string>`. Debian 13's `/usr/include/aarch64-linux-gnu/asm/*` are symlinks into `/usr/lib/linux/uapi/`, which wasn't copied (74 broken links). Chain: `<string>` → `<cerrno>` → `errno.h` → `linux/errno.h` → `asm/errno.h`. Added `/usr/lib/linux/uapi` to the copy.
+
+### GitHub
+
+- Public repo **github.com/dillanhart/multi-room-hvac**. Purpose: portfolio/proof of work; the Pi never pulls from GitHub.
+- Sensirion driver tracked as a **submodule**, not copied.
+- Not in the repo: `additional_files/` (datasheets, pinouts, reference data), build output, `.claude/`, `.sysroot/`.
+- Photo EXIF stripped before publishing: `IMG_1192.JPG` had GPS coordinates. Kept orientation + ICC profile only.
+- Commits use the GitHub no-reply address (repo-local `user.email`).
+- GitHub CLI authorized without granting `cs3450-team-3` org access.
+- Old root-level `control.c` (09-27 version) deleted.
+
+### C/C++ build errors
+
+- `sensor.h` is shared by C (`sensor.c`) and C++. **Anything C++ in it breaks the C build** — `std::string` in `sensor_node` gave `expected specifier-qualifier-list before 'std'`. `sensor_node` moved to `control.h`. Same error recurred later with `sensor_health` + `#include <string>` in `sensor.h`.
+- **Each `.cpp` sees only what it includes.** `control.cpp` didn't include `control.h`, so `sensor_node` was undeclared; every `begin`/`end`/`template argument invalid` error after it was cascade. Fix the first error, rebuild, then read on.
+- `std::max(a, b, c)` treats `c` as a comparator → `std::max({a, b, c})` / `std::minmax_element`.
+- `{"main", 10, 8}` silently filled `data.temperature`/`humidity`, leaving both weights 0. → designated initializers `{.name = "main", .weight_day = 10, .weight_night = 8}`.
+- `a, b, c = x;` is the comma operator — only `c` is assigned.
+- Separate `main_node`/`office_node`/`bed_node` variables were copies; `nodes` never saw their data. Removed; use `nodes[i]`.
+- `printf` needs `%s` + `.c_str()` for `std::string`, `%f` for float, and `\n` or nothing appears (line buffering).
+- Constants → file-scope `constexpr` (GCC doesn't warn on unused ones); not-yet-used variables tagged `[[maybe_unused]]` (Claude's edit). Timestamps `long long`.
+
+### SCD41 read failure traced
+
+Output was `already measuring` ×2 → `read failed` → `heat` / `10.0 F`.
+
+- `get_sensor_data()` called `scd41_start()` again (its own `started` flag didn't know `main` had started it), and the second `sensirion_i2c_hal_init()` broke the bus. **Sensirion's Linux HAL caches the device address in a static and only issues `ioctl(I2C_SLAVE)` when it changes**, so a second `open()` gets a handle with no address set. Every command NACKs, so the ASC call fails and is misread as "already measuring".
+- `sensirion_i2c_hal_free()` doesn't reset the cached address either, so the "reconnect on next call" path could never recover.
+- **10.0 F was the main node's day weight** (brace-init bug), not a sensor value. `heat` came from the weighted temp returning `0.0f` with no valid sensors.
+- Fixes: `get_sensor_data()` only reads, bus never closed (user). `scd41_start()` opens the bus at most once; every 3rd failure in a row retries `start_periodic_measurement` (Claude). `calculate_weighted_temperature` → `std::optional<float>`, `get_HVAC_command` returns `"no_data"` when empty (Claude).
+- Verified on the Pi: one `already measuring`, real readings (68.4 °F) → `heat` correctly below `heat_set` 70.
+
+### Resolved from 2026-10-02 Open
+
+`control.h` filled; weighted average divides by weight sum; `get_HVAC_command` always returns; functions declared before use. Clean build, zero warnings.
+
+---
+
+## 2026-10-03 — Sensor validation implemented
+
+Design from 10-02 evening; rationale in [idea.md](idea.md) → Failure handling. Implemented by Claude at user request, on top of the user's `sensor_health` / `scd41_start_status` / field-rename edits.
+
+- **`sensor.c` is a thin driver.** `get_sensor_data()` no longer waits: one data-ready check, "not ready" counts as a failure. Removes the 6 s block flagged 09-28, and the `usleep` loop, so the file ports to the ESP32 with only the HAL swapped. `result = { 0 }` restored (it had been dropped, leaving `read_ok` uninitialized on failure).
+- Fields renamed (user): `temp`, `hum`, `read_ok` (was `valid` — "the read worked", not "trust this"). `net.cpp` status line updated to match.
+- **`scd41_start()` returns `SCD41_STARTED` / `SCD41_ALREADY_RUNNING` / `SCD41_ERROR`** (enum in `sensor.h`). `main` sets `started_at = now - SENSOR_WARMUP` if already running, else `now`.
+- **`control.h`:** `enum class sensor_status { ok, warming, error }`; `sensor_health` (defaults set) inside `sensor_node`; `SEC`, `MIN` and validation constants moved here from `main.cpp`.
+- **`update_node()`** (all nodes): 50–110 °F range; rate vs the **previous** reading ≤ 20 °F / 3 min; `CONSISTENT_READS` = 3 good in a row → `trusted`; on error keep the last good reading up to `MAX_READING_AGE` (3 min). `local_sensor_status()` maps the Pi's read to error / warming / ok.
+- Control logic checks only `health.trusted`; `test_valid_temp` removed.
+- **Verified on the Pi** (sensor already running): `no_data` ×2 → trusted on the 3rd read → `heat` at 65.7 °F.
+
+### Open
+
+- Untested on hardware: fresh-start warming (needs sensor power cycle), error-hold path, jump rejection.
+- Trust takes `CONSISTENT_READS` reads: 30 s at the current `sleep(10)`, ~3 min at `READ_INTERVAL` (1 min).
+- Satellite side: map the ESP32 JSON `"status"` to `sensor_status`, then `update_node(nodes[1..2], …)`.
+- `main` doesn't act on `"no_data"` yet (should be all-off + count toward `MAX_SENSOR_FAILS`). No relay switching wired.
+- Still open from 10-02: `hour_of_day()` counts every hour after 08:00 as day; `control.cpp` includes `<chrono>` but uses `<ctime>` functions; `calibrate.c` comment says 425 ppm, `DEFAULT_TARGET_PPM` is 438.
+- Today's changes uncommitted.
