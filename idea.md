@@ -208,7 +208,10 @@ At minimum: timestamp, per-zone temp/humidity/CO2, current mode (AC/furnace/idle
 ## Constraints
 
 - **C++ wherever possible.** A primary goal of the project is getting more familiar with it.
-- **No AI-generated code.** Generative AI is used for planning and research only. Vibe-coding an app would defeat the point of learning C++.
+- **AI augments the work; it doesn't replace the learning.** Goals: learn C++, re-sharpen program-design skills, and use AI to speed that up and take on the tedium (boilerplate, tooling, mechanical edits), as long as it doesn't get in the way of learning. Design decisions stay mine, and AI-written code gets read and understood, not just accepted.
+  - **Design problems: my attempt first.** I come up with a design before getting one. If I'm stuck, AI points me at what to research or which question to ask, rather than handing over the answer. A few minutes of struggling is part of learning; a direct answer only after that.
+  - **AI raises what I haven't considered.** Alternatives, trade-offs and missed failure modes get brought up, not silently built around. Pressing ahead on a design only because I didn't think of a better one isn't learning.
+  - *Revised 2026-10-03; originally "no AI-generated code", which was too ambitious alongside full-time school, 25 h/week of work, a new language and first-time hardware, and isn't what a modern employer is looking for — using AI well is.*
 
 ## MVP
 

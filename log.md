@@ -557,3 +557,19 @@ Design from 10-02 evening; rationale in [idea.md](idea.md) → Failure handling.
 - `main` doesn't act on `"no_data"` yet (should be all-off + count toward `MAX_SENSOR_FAILS`). No relay switching wired.
 - Still open from 10-02: `hour_of_day()` counts every hour after 08:00 as day; `control.cpp` includes `<chrono>` but uses `<ctime>` functions; `calibrate.c` comment says 425 ppm, `DEFAULT_TARGET_PPM` is 438.
 - Today's changes uncommitted.
+
+### Constraint revised: AI use
+
+Dropped "no AI-generated code" (idea.md → Constraints). New goal: learn C++ and re-sharpen design skills, using AI to augment that and cut tedium where it doesn't hinder learning. Authorship of AI-written changes stays marked in this log. On design problems: my attempt first, or pointers on what to research before any direct answer; AI raises alternatives and missed failure modes rather than building around my plan.
+
+---
+
+## 2026-10-05 — HVAC state machine (in progress)
+
+- `hvac_status` enum + `test_switch(sys_status, command, …)` → next state; heat ↔ cool routed through idle (user). `starting` dropped (same as idle).
+- `equipment_for` / `conflicting` (furnace vs AC) and `status_for` (command → status; `none`/`no_data` → idle) added; file-local helpers in `control.cpp` made `static` (Claude).
+
+### Open
+
+- `test_switch`: same request (heating + heat) → idle; min-on not enforced on exit to idle; no hold during min-on; emergency heat waits for min-off; em max-run restarts after one tick.
+- `over_cycling` unused (warning). `main` not yet wired to `test_switch`.

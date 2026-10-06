@@ -4,48 +4,28 @@
 #include <string>
 #include <vector>
 #include "sensor.h"
+#include "validation.h"   // sensor_node
 
-// all times in milliseconds
-constexpr int SEC = 1000;
-constexpr int MIN = 60 * SEC;
-
-// sensor validation
-constexpr int SENSOR_WARMUP = 3 * MIN;          // local SCD41 settling time after a fresh start
-constexpr float MIN_VALID_TEMP = 50;            // degrees F; outside this range = bad reading
-constexpr float MAX_VALID_TEMP = 110;
-constexpr float MAX_TEMP_RATE = 20.0f / 3;      // degrees F per minute (20 degrees in 3 mins = failing)
-constexpr int CONSISTENT_READS = 3;             // good readings in a row before a sensor is trusted
-constexpr int MAX_READING_AGE = 3 * MIN;        // keep using the last good reading this long after failures
-
-// what a sensor says about itself; satellites send this in their JSON
-enum class sensor_status { ok, warming, error };
-
-// keep metadata for the sensor to see if it is reading properly
-struct sensor_health {
-    sensor_status status = sensor_status::error;
-    long long started_at = 0;      // local sensor only: when it started measuring (set from scd41_start)
-    long long last_read_at = 0;    // time of the last successful read
-    float last_temp = 0;           // that read's temperature, for the jump check
-    bool has_last = false;         // false until the first successful read
-    int fails_in_row = 0;
-    int consistent = 0;            // good readings in a row
-    bool trusted = false;          // the only thing control logic checks
+enum class hvac_command{
+    emergency_heat,
+    heat,
+    cool,
+    fan,
+    none,
+    no_data,
 };
 
-struct sensor_node {
-    std::string name;
-    sensor_result data;            // last successful reading; use only when health.trusted
-    int weight_day;
-    int weight_night;
-    sensor_health health;
+enum class hvac_status{
+    em_heating,
+    heating,
+    cooling,
+    circulating,
+    idle,
 };
 
-// status of the Pi's own SCD41: error if the read failed, warming during SENSOR_WARMUP
-sensor_status local_sensor_status(const sensor_result& reading, long long started_at, long long now);
+hvac_command get_HVAC_command(const std::vector<sensor_node>& sensors, float heat_set, float ac_set);
 
-// apply one reading to a node and decide whether it is trusted (all nodes, local and satellite)
-void update_node(sensor_node& node, const sensor_result& reading, sensor_status status, long long now);
+hvac_status test_switch (hvac_status sys_status, hvac_command command,long long cycle_start, long long now_ms, long long cycle_end);
 
-std::string get_HVAC_command(const std::vector<sensor_node>& sensors, float heat_set, float ac_set, float FAN_TRIGGER);
 
 #endif

@@ -19,7 +19,11 @@ enum relay {
 // Returns 0 on success, -1 on failure (error is printed).
 int relays_init(void);
 
-// Turn one relay on (1) or off (0). Returns 0 on success, -1 on failure.
+// returned by relay_set() when turning Heat on while Cool is on, or the reverse
+#define RELAY_INTERLOCK (-2)
+
+// Turn one relay on (1) or off (0). Returns 0 on success, -1 on failure,
+// RELAY_INTERLOCK if Heat and Cool would both be on (nothing is changed).
 int relay_set(enum relay r, int on);
 
 // Last value set with relay_set(): 1 = on, 0 = off.

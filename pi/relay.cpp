@@ -112,7 +112,13 @@ int relays_init(void) {
  *
  * r:       which relay: RELAY_HEAT, RELAY_COOL or RELAY_FAN
  * on:      1 = turn the relay on, 0 = turn it off
- * Returns: 0 on success, -1 on failure (error is printed).
+ * Returns: 0 on success, -1 on failure (error is printed),
+ *          RELAY_INTERLOCK if Heat and Cool would both be on (nothing is changed).
+ *
+ * Interlock: Heat and Cool are never on together. Turning one on while the
+ * other is on is refused here, so no caller can bypass it. A refusal means the
+ * caller failed to turn the other relay off first (a logic bug, not a normal
+ * "not yet"), so it is reported on stderr and the caller must check for it.
  *
  * ACTIVE/INACTIVE are logical values; the active-low setting from
  * request_relays() handles whether that means a HIGH or LOW pin.
@@ -122,6 +128,13 @@ int relay_set(enum relay r, int on) {
 
     if (!request || r < 0 || r >= NUM_RELAYS)
         return -1;
+
+    if (on && ((r == RELAY_HEAT && relay_state[RELAY_COOL]) ||
+               (r == RELAY_COOL && relay_state[RELAY_HEAT]))) {
+        fprintf(stderr, "INTERLOCK VIOLATION: refused %s on, %s is still on\n",
+                relay_names[r], relay_names[r == RELAY_HEAT ? RELAY_COOL : RELAY_HEAT]);
+        return RELAY_INTERLOCK;
+    }
     if (gpiod_line_request_set_value(request, relay_pins[r], value)) {
         perror("gpiod_line_request_set_value");
         return -1;

@@ -9,67 +9,11 @@
 #include <algorithm>
 #include <optional>
 #include <cmath>
-
-
-// status of the Pi's own SCD41. Satellites report their own status instead.
-sensor_status local_sensor_status(const sensor_result& reading, long long started_at, long long now) {
-    if (!reading.read_ok) return sensor_status::error;
-    if (now - started_at < SENSOR_WARMUP) return sensor_status::warming;
-    return sensor_status::ok;
-}
-
-
-// apply one reading to a node: range check, jump check against the previous
-// reading, and CONSISTENT_READS good readings in a row before it is trusted
-void update_node(sensor_node& node, const sensor_result& reading, sensor_status status, long long now) {
-    sensor_health& h = node.health;
-    h.status = status;
-
-    if (status == sensor_status::warming) {
-        h.trusted = false;
-        h.consistent = 0;
-        return;
-    }
-
-    if (status == sensor_status::error) {
-        h.fails_in_row++;
-        // a short blip: keep trusting the last good reading in node.data;
-        // once it's too old, stop
-        if (!h.has_last || now - h.last_read_at > MAX_READING_AGE)
-            h.trusted = false;
-        return;
-    }
-
-    h.fails_in_row = 0;
-
-    bool in_range = reading.temp >= MIN_VALID_TEMP && reading.temp <= MAX_VALID_TEMP;
-
-    // compare with the previous reading (trusted or not), as degrees per minute,
-    // so a real change is accepted after CONSISTENT_READS instead of locking the sensor out
-    bool rate_ok = true;
-    if (h.has_last) {
-        float minutes = std::max(now - h.last_read_at, (long long)SEC) / (float)MIN;
-        rate_ok = std::fabs(reading.temp - h.last_temp) / minutes <= MAX_TEMP_RATE;
-    }
-
-    if (in_range && rate_ok) {
-        h.consistent++;
-    } else {
-        if (h.consistent > 0)
-            printf("%s: rejected %.1f F (%s)\n", node.name.c_str(), reading.temp,
-                   in_range ? "jumped too fast" : "out of range");
-        h.consistent = 0;
-    }
-
-    h.last_temp = reading.temp;
-    h.last_read_at = now;
-    h.has_last = true;
-    node.data = reading;
-    h.trusted = h.consistent >= CONSISTENT_READS;
-}
+#include "validation.h"
+#include "constants.h"
 
 // return int of the hour for determining dynamic weights
-bool hour_of_day (){
+static bool hour_of_day (){
     std::time_t now = std::time(nullptr);
     std::tm* local_time = std::localtime(&now);
     return local_time->tm_hour > 8;
@@ -78,7 +22,7 @@ bool hour_of_day (){
 
 // calculate the weighted temp from trusted sensors;
 // std::nullopt if no sensor is trusted
-std::optional<float> calculate_weighted_temperature(const std::vector<sensor_node>& nodes) {
+static std::optional<float> calculate_weighted_temperature(const std::vector<sensor_node>& nodes) {
     float total_weighted_temp = 0.0f;
     float total_weight = 0.0f;
     bool is_day = hour_of_day();
@@ -96,14 +40,11 @@ std::optional<float> calculate_weighted_temperature(const std::vector<sensor_nod
 }
 
 
-std::string get_HVAC_command(const std::vector<sensor_node>& sensors, 
-                             float heat_set, 
-                             float ac_set, 
-                             float FAN_TRIGGER) {
+hvac_command get_HVAC_command(const std::vector<sensor_node>& sensors, float heat_set, float ac_set) {
     
     // 1. Get the aggregated data; no valid sensors means no decision
     std::optional<float> weighted = calculate_weighted_temperature(sensors);
-    if (!weighted) return "no_data";
+    if (!weighted) return hvac_command::no_data;
     float weighted_temp = *weighted;
 
     // 2. Extract raw temps for the "Fan" check
@@ -114,13 +55,70 @@ std::string get_HVAC_command(const std::vector<sensor_node>& sensors,
     }
 
     // 3. Decision Logic
-    if (weighted_temp > ac_set) return "cool";
-    if (weighted_temp < heat_set) return "heat";
+    if (weighted_temp > ac_set) return hvac_command::cool;
+    if(weighted_temp < MIN_HEAT) return hvac_command::emergency_heat;
+    if (weighted_temp < heat_set) return hvac_command::heat;
     
     if (!raw_temps.empty()) {
         auto [min_it, max_it] = std::minmax_element(raw_temps.begin(), raw_temps.end());
-        if (*max_it - *min_it > FAN_TRIGGER) return "fan";
+        if (*max_it - *min_it > FAN_TRIGGER) return hvac_command::fan;
     }
 
-    return "none";
+    return hvac_command::none;
+}
+
+enum class equipment { none, furnace, ac };
+
+static equipment equipment_for(hvac_status s) {
+    switch (s) {
+        case hvac_status::heating:
+        case hvac_status::em_heating:  return equipment::furnace;
+        case hvac_status::cooling:     return equipment::ac;
+        default:                       return equipment::none;  // idle, circulating
+    }
+}
+
+// true if going from a to b means switching between furnace and AC
+static bool conflicting(hvac_status a, hvac_status b) {
+    equipment ea = equipment_for(a), eb = equipment_for(b);
+    return ea != equipment::none && eb != equipment::none && ea != eb;
+}
+
+// the status a command is asking for; no_data asks for idle
+// (no default: -Wswitch warns if a new command isn't mapped here)
+static hvac_status status_for(hvac_command command) {
+    switch (command) {
+        case hvac_command::emergency_heat: return hvac_status::em_heating;
+        case hvac_command::heat:           return hvac_status::heating;
+        case hvac_command::cool:           return hvac_status::cooling;
+        case hvac_command::fan:            return hvac_status::circulating;
+        case hvac_command::none:
+        case hvac_command::no_data:        return hvac_status::idle;
+    }
+    return hvac_status::idle;  // unreachable; satisfies -Wreturn-type
+}
+
+hvac_status test_switch (hvac_status sys_status, hvac_command command, long long cycle_start, long long now_ms, long long cycle_end){
+    hvac_status requested_status = status_for(command);
+    hvac_status return_status;
+    // if the system is turning on has it been enough time since it turned off to switch
+    if (sys_status == hvac_status::idle){
+        if (now_ms > cycle_end + MIN_OFF_TIME || requested_status == hvac_status::circulating){
+            return_status = requested_status;
+        }
+        else {return_status = sys_status;}
+        }
+    else {
+        // if it is currently in an active situation (heating, cooling) then has it been running for long enough to turn off
+        if(conflicting(sys_status, requested_status) ||  requested_status == hvac_status::circulating){
+            if (now_ms > cycle_start + MIN_ON_TIME){
+                return_status = requested_status;
+                // if it has been running for too long, nevermind turn it off.
+                if (now_ms > cycle_start + MAX_RUN_TIME){
+                    return_status = hvac_status::idle;
+                }
+            }
+        }else {return_status = hvac_status::idle;}
+    }
+    return return_status;
 }
