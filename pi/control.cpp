@@ -11,6 +11,7 @@
 #include <cmath>
 #include "validation.h"
 #include "constants.h"
+#include "relay.h"
 
 // return int of the hour for determining dynamic weights
 static bool hour_of_day (){
@@ -102,7 +103,12 @@ hvac_status test_switch (hvac_status sys_status, hvac_command command, long long
     hvac_status requested_status = status_for(command);
     hvac_status return_status;
     // if the system is turning on has it been enough time since it turned off to switch
-    if (sys_status == hvac_status::idle){
+    if (command == hvac_command::emergency_heat){
+        return_status = hvac_status::em_heating;
+        if (now_ms > cycle_start + MAX_RUN_TIME && requested_status == sys_status){
+            return_status = hvac_status::idle;
+        }
+    } else if (sys_status == hvac_status::idle){
         if (now_ms > cycle_end + MIN_OFF_TIME || requested_status == hvac_status::circulating){
             return_status = requested_status;
         }
@@ -110,8 +116,13 @@ hvac_status test_switch (hvac_status sys_status, hvac_command command, long long
         }
     else {
         // if it is currently in an active situation (heating, cooling) then has it been running for long enough to turn off
-        if(conflicting(sys_status, requested_status) ||  requested_status == hvac_status::circulating){
-            if (now_ms > cycle_start + MIN_ON_TIME){
+        if(!conflicting(sys_status, requested_status)){
+            return_status = sys_status;
+            // circulating -> furnace/AC restarts the equipment, so it waits out MIN_OFF_TIME like idle does
+            bool restart_blocked = equipment_for(sys_status) == equipment::none &&
+                                   equipment_for(requested_status) != equipment::none &&
+                                   now_ms <= cycle_end + MIN_OFF_TIME;
+            if (now_ms > cycle_start + MIN_ON_TIME && !restart_blocked){
                 return_status = requested_status;
                 // if it has been running for too long, nevermind turn it off.
                 if (now_ms > cycle_start + MAX_RUN_TIME){
@@ -121,4 +132,33 @@ hvac_status test_switch (hvac_status sys_status, hvac_command command, long long
         }else {return_status = hvac_status::idle;}
     }
     return return_status;
+}
+
+// switch the relays to match new_status; only if that worked, stamp the cycle timers
+// (furnace/AC stopping stamps cycle_end, any non-idle status stamps cycle_start;
+// em_heating -> heating keeps cycle_start so MAX_RUN_TIME keeps counting from
+// when the furnace started)
+// returns 0 on success, non-zero on failure (timers untouched, caller retries)
+int apply_status(hvac_status old_status, hvac_status new_status, long long now, long long& cycle_start, long long& cycle_end){
+    int relay_success = -1;
+    switch (new_status){
+        case hvac_status::idle:        relay_success = all_off(); break;
+        case hvac_status::cooling:     relay_success = relay_set(RELAY_COOL, 1); break;
+        case hvac_status::em_heating:
+        case hvac_status::heating:     relay_success = relay_set(RELAY_HEAT, 1); break;
+        case hvac_status::circulating:
+            // heat/cool may still be on from the previous status; drop them first
+            relay_success = all_off();
+            if (relay_success == 0) relay_success = relay_set(RELAY_FAN, 1);
+            break;
+    }
+    if (relay_success != 0) return relay_success;
+
+    // the furnace/AC just stopped (to idle or to circulating): MIN_OFF_TIME starts now
+    if (equipment_for(old_status) != equipment::none && equipment_for(new_status) == equipment::none)
+        cycle_end = now;
+    if (new_status != hvac_status::idle &&
+        !(old_status == hvac_status::em_heating && new_status == hvac_status::heating))
+        cycle_start = now;
+    return 0;
 }

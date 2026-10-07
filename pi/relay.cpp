@@ -173,6 +173,16 @@ void relays_close(void) {
     }
 }
 
-void all_off(void){
-    for (int r = 0; r < NUM_RELAYS; r++)relay_set(static_cast<relay>(r),0);
+/*
+ * all_off - turn every relay off, without releasing the pins.
+ * Tries every relay even if one fails, so a bad write can't leave the others on.
+ * Returns: 0 if all relays were turned off, -1 if any failed (same as relay_set).
+ */
+int all_off(void){
+    int result = 0;
+    for (int r = 0; r < NUM_RELAYS; r++) {
+        if (relay_set(static_cast<relay>(r), 0) != 0)
+            result = -1;
+    }
+    return result;
 }

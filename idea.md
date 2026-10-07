@@ -39,9 +39,9 @@ Raspberry Pi 3 as the main thermostat: interfaces with the existing thermostat w
 
 **Temperature sensing.** The Pi carries its own SCD41 (same part as the satellites — see [Satellites](#satellites)). It must sit a short cable-length away from the Pi board rather than mounted against it: the Pi runs measurably warmer than an idle ESP32, and the control scheme depends on a degree-level deadband. A placement constraint for the enclosure, which hasn't been designed yet.
 
-**Display.** ILI9341 TFT, 2.4", 240x320, SPI. Color, so heat/cool/idle state can be color-coded. Driven either via the `fbtft` framebuffer overlay or a hand-written SPI init sequence.
+**Display.** ILI9341 TFT, 2.4", 240x320, SPI. Color, so heat/cool/idle state can be color-coded. Driven by the mainline `panel-mipi-dbi` DRM driver (`fbtft` was tried and rejected — see [log.md](log.md), 2026-09-22). Runs as its own program, separate from control (see [Program structure](#program-structure)).
 
-**Buttons.** Two momentary pushbuttons (raise/lower) on GPIO with internal pull-ups. Not yet purchased.
+**Buttons.** Two momentary pushbuttons (raise/lower) on GPIO with internal pull-ups, read by the display program. Not yet purchased. Touch was considered, but the module has no touch controller fitted.
 
 ### HVAC interface
 
@@ -114,18 +114,20 @@ The Pi reads its own sensor plus both satellites, then decides. Response logic i
 
 The goal driving all of it: **stay comfortable for as little money as possible.** Try the fan first — move air from the reserve. Only bring in the furnace or AC if the fan alone isn't fixing it.
 
-**Combining zones.** A weighted average of the three sensors drives the power-hungry decision: average outside the deadband → heat or AC; inside it → fan or nothing. The average alone can't drive the fan, though — office 78 °F plus downstairs 68 °F averages to ~73 °F, inside the deadband, which is exactly when the fan *should* run. So the fan decision uses the **spread between zones** (warmest − coolest, or each zone's distance from its own target) plus bedroom CO2. *Spread-based fan logic is a proposal, not yet settled.*
+**Combining zones.** A weighted average of the three sensors drives the power-hungry decision: average outside the deadband → heat or AC; inside it → fan or nothing. The average alone can't drive the fan, though — office 78 °F plus downstairs 68 °F averages to ~73 °F, inside the deadband, which is exactly when the fan *should* run. So the fan decision uses the **spread between zones** (warmest − coolest, or each zone's distance from its own target) plus bedroom CO2. *Spread-based fan logic is not yet settled; a first cut (warmest − coolest > `FAN_TRIGGER`) is in `get_HVAC_command`.*
 
-Weights change by time of day — the bedroom's extra authority midnight–8am is just a different weight table on a schedule. A zone that is stale or rejected is dropped and the remaining weights are rescaled to sum to 1, so the loop degrades to two sensors, or the Pi's own, rather than failing.
+Weights change by time of day — the bedroom's extra authority midnight–8am is just a different weight table on a schedule. A zone that is stale or untrusted is dropped and the remaining weights are divided by their sum (ratios unchanged), so the loop degrades to two sensors, or the Pi's own, rather than failing.
 
 ### Program structure
 
-One single-threaded **event loop**. The loop runs forever, but it never busy-waits: each pass blocks in `poll()` on every input — HTTP sockets, button GPIO edge events (libgpiod v2 `gpiod_line_request_get_fd()`), later touch (`/dev/input/eventN`), and `signalfd` for SIGTERM. `poll()` returns the moment any of them is ready, so input is handled within milliseconds even while the furnace or AC is running.
+**Two programs** (decided 2026-09-30): the control program owns the relays and sensors; the display program owns the screen and pushbuttons and is a client of the same JSON API as the web UI, over `localhost`. A display hang or crash can't stall HVAC control, and every setting change goes through one validation path.
 
-- **Heating/cooling is a state, not a loop.** State is `IDLE / HEATING / COOLING / FAN`. Each pass checks whether it should change, acts, and returns. Nothing waits inside a handler.
-- **`poll()` timeout = time until the earliest deadline**, not a fixed sleep. Each periodic job keeps its own next-due time (control step ~30 s, satellite poll ~60 s, display clock ~1 s if shown). Multiple `timerfd`s are an equivalent option.
-- **The decision is a pure function**: `decide(state, readings, settings, now) → new state`. It touches no hardware, so the deadband and minimum-off-time logic can be tested on a desktop with fake readings.
-- **Display redraws only when something changed** (a dirty flag set by new readings, setpoint changes or relay changes), once per pass, and only the changed region. A full 320×240 RGB565 frame is ~150 KB, ~150 ms at the current 8 MHz SPI. Short timeouts (~33 ms) only during animation or touch drag.
+The control program is one single-threaded **event loop**. The loop runs forever, but it never busy-waits: each pass blocks in `poll()` on every input — HTTP sockets and `signalfd` for SIGTERM. `poll()` returns the moment any of them is ready, so input is handled within milliseconds even while the furnace or AC is running.
+
+- **Heating/cooling is a state, not a loop.** States are `idle / heating / em_heating / cooling / circulating` (`hvac_status`). Each pass checks whether it should change, acts, and returns. Nothing waits inside a handler.
+- **`poll()` timeout = time until the earliest deadline**, not a fixed sleep. Each periodic job keeps its own next-due time (control step ~30 s, satellite poll ~60 s). Multiple `timerfd`s are an equivalent option.
+- **The decision is a pure function**: `test_switch(state, command, timestamps, now) → new state`. It touches no hardware, so the timing rules can be tested on a desktop with fake inputs.
+- **The display redraws only when something changed**, and only the changed region. A full 320×240 RGB565 frame is ~150 KB, ~150 ms at the current 8 MHz SPI.
 - **No blocking calls inside the loop.** `get_sensor_data()` does a single data-ready check and never waits (done 2026-10-03). Satellite fetches go through libcurl's multi interface (plugs into `poll()`), or at minimum a short timeout. The HTTP server has to run inside this loop: Mongoose is designed for that, and libmicrohttpd supports it in "external select" mode. *Library choice still open.*
 - **On SIGTERM, switch every relay off before exiting** — the software half of the fail-safe.
 - All timing on `CLOCK_MONOTONIC`, never wall-clock time.
@@ -136,7 +138,22 @@ The real risk is the AC and furnace fighting each other — AC overshoots cold, 
 
 1. **Deadband instead of a single setpoint.** E.g. AC on at 74°F / off at 71°F; furnace on at 69°F / off at 72°F. The gap between them is a band where neither runs.
 2. **Seasonal lockout derived from the weather API**, not set by hand. Rolling outdoor average above ~65°F = AC-only; below ~55°F = furnace-only; between = swing season where either may run under the deadband. This is the main use of the weather API — delaying or skipping a cycle rather than reacting live.
-3. **Hard minimum off-time per system** (~5 min) regardless of temperature, to protect the compressor.
+3. **Cycle timers**, regardless of temperature, to protect the furnace and compressor (below).
+
+#### Cycle timing (decided 2026-10-05)
+
+| Timer | Value | Rule |
+|---|---|---|
+| Min off | 10 min | Furnace or AC can't start until 10 min after either stopped. One shared lockout: furnace stopped 5 min ago → AC waits 5 more. |
+| Min on | 5 min | A running cycle can't be stopped before 5 min. |
+| Max run | 2 h | A cycle running 2 h is forced to idle. Not reaching the setpoint in 2 h suggests a sensor or equipment fault. |
+
+- **The relays follow a state, not the command.** The temperature logic produces a request (`hvac_command`); `test_switch` turns current state + request + timers into the next state (`hvac_status`); relays change only when the state changes. Request and state are separate types: `no_data` is a request with no matching state, and a future fault/lockout state would be a state nothing requests.
+- **Timestamps change only on transitions.** idle → heat/cool/em_heat sets `cycle_start`; heat/cool/em_heat → idle/circulating sets `cycle_end`. Updating them every tick instead (the first attempt) meant the lockout never expired. `cycle_end` starts at boot time, so a power blip mid-cycle still gets a full min-off before restarting.
+- **Heat ↔ cool always goes through idle**, so min-off applies before the other system starts. It skips min-on: a switch within minutes means something is wrong, and stopping beats continuing to heat. Rare in practice, since the temperature has to cross the whole deadband.
+- **Emergency heat** (below `MIN_HEAT`, 60 °F) bypasses min-off. Max-run still applies. *Open:* as written it restarts one tick after max-run stops it; it needs a fault state that stays off, or a progress check (`PROGRESS_WINDOW`: 1 °F within 20 min) that catches a dead furnace or stuck sensor sooner.
+- **No sensor data** = request idle: a running cycle finishes its min-on, then stops; idle stays idle.
+- **Fan:** *open* — whether circulating follows the furnace/AC timers or has its own.
 
 ### Failure handling
 
@@ -152,7 +169,6 @@ Control logic sees only trustworthy numbers: it checks one flag per sensor, `hea
 - **Rate of change vs the *previous* reading**, trusted or not, in °F per minute; more than 20 °F in 3 min is a failing sensor. Comparing with the last *trusted* value instead would lock a sensor out forever after a real step change (e.g. a satellite moved near a window). As a rate rather than a fixed delta, a sensor returning after an hour offline doesn't look like a jump.
 - **Re-trust after 3 consistent readings in a row**, so a spike that settles stays rejected and a real change is accepted after ~3 reads.
 - **Blips:** on a failed read, keep using the last good reading for up to 3 min, then drop the sensor. Avoids the ~2 °F jump in the weighted average each time a sensor flickers. A rolling per-room offset estimate was considered and rejected: occupancy (body heat) makes the offset unstable in exactly the room that matters, and the extra complexity isn't worth it — the system is already equalizing when a jump happens, and min on/off times cap any extra cycling.
-- **Weights when a sensor drops:** remaining weights are renormalized by dividing by their sum; their ratios are unchanged.
 - **Warm-up, local sensor:** the SCD41 can't report how long it has been on. `scd41_start()` returns whether it started measuring or found it already running (the ASC-disable command is rejected while measuring). Already running → already warm, `started_at = now - SENSOR_WARMUP`; fresh start or error → wait the full 3 min. `started_at` must always be set explicitly: its default 0 on the monotonic clock means "since boot", i.e. falsely warm. Known gap: a crash within 3 min of a fresh start, then a restart, is treated as warm while the sensor still reads a few degrees high. Fix if needed: record the start time in `/run` (cleared on reboot) and wait the full warm-up when it's missing.
 - **Warm-up, satellites:** reported by the satellite (`"status": "warming"`), see [Satellites](#satellites).
 
@@ -170,9 +186,7 @@ The Pi keeps its settings in a file so they survive a restart: heat setpoint, AC
 
 ### Web UI ↔ Pi
 
-The Pi exposes a small **JSON-over-HTTP API**; the Ubuntu web app is its only client. Browsers never talk to the Pi directly. Endpoints along the lines of `GET /status`, `PUT /setpoints`, `PUT /vacation`, `GET /history`, `GET /events`.
-
-The Pi's current sluggishness is VS Code's remote server and IntelliSense, not network load — an API called a few times a minute by one client costs effectively nothing.
+The Pi exposes a small **JSON-over-HTTP API**; the Ubuntu web app and the local display program are its clients. Browsers never talk to the Pi directly. Endpoints along the lines of `GET /status`, `PUT /setpoints`, `PUT /vacation`, `GET /history`, `GET /events`.
 
 Rejected alternatives:
 - **MQTT (Mosquitto)** — the home-automation standard, decoupled, retained messages. Adds a broker to run, and a broker on Ubuntu would make satellite data depend on Ubuntu being up. Worth revisiting if voice control or more devices happen; the broker would then live on the Pi.

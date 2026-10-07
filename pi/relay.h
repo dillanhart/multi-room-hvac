@@ -35,6 +35,8 @@ const char *relay_name(enum relay r);
 // Turn every relay off and release the pins.
 void relays_close(void);
 
-void all_off(void);
+// Turn every relay off (pins stay claimed). Tries all relays even if one fails.
+// Returns 0 if all were turned off, -1 if any failed (same as relay_set).
+int all_off(void);
 
 #endif

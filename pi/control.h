@@ -27,5 +27,8 @@ hvac_command get_HVAC_command(const std::vector<sensor_node>& sensors, float hea
 
 hvac_status test_switch (hvac_status sys_status, hvac_command command,long long cycle_start, long long now_ms, long long cycle_end);
 
+// switch the relays to new_status; on success stamps cycle_start/cycle_end and returns 0
+int apply_status(hvac_status old_status, hvac_status new_status, long long now, long long& cycle_start, long long& cycle_end);
+
 
 #endif

@@ -44,8 +44,8 @@ int main(void) {
 
     // [[maybe_unused]]: not wired in yet; remove the tag once each is used
     [[maybe_unused]] int sensor_fails = 0;
-    long long cycle_start = 0;  // ms timestamps: long long, int overflows after ~24 days
-    long long cycle_end = 0;
+    long long cycle_start = now;  // ms timestamps: long long, int overflows after ~24 days
+    long long cycle_end = now;
 
     // settings: these will change at runtime (display / web UI)
     float ac_set = 73;
@@ -83,15 +83,13 @@ int main(void) {
         update_node(nodes[0], reading, local_sensor_status(reading, nodes[0].health.started_at, now), now);
 
         hvac_command command = get_HVAC_command(nodes, heat_set, ac_set);
-        const sensor_health& h = nodes[0].health;
-        printf("%s | main %.1f F, %s, %s (%d good in a row)\n", command, nodes[0].data.temp,
-               h.status == sensor_status::ok ? "ok" : h.status == sensor_status::warming ? "warming" : "error",
-               h.trusted ? "trusted" : "untrusted", h.consistent);
-        
-        
+        hvac_status switch_status = test_switch(sys_status, command, cycle_start, now, cycle_end);
 
-        
-        sleep(10);
+        if (sys_status != switch_status &&
+            apply_status(sys_status, switch_status, now, cycle_start, cycle_end) == 0){
+            sys_status = switch_status;
         }
+        sleep(10);
+    }
     return 0;
 }
