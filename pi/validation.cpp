@@ -37,8 +37,10 @@ void update_node(sensor_node& node, const sensor_result& reading, sensor_status 
         h.fails_in_row++;
         // a short blip: keep trusting the last good reading in node.data;
         // once it's too old, stop
-        if (!h.has_last || now - h.last_read_at > MAX_READING_AGE)
+        if (!h.has_last || now - h.last_read_at > MAX_READING_AGE){
             h.trusted = false;
+            h.consistent = 0;
+        }
         return;
     }
 

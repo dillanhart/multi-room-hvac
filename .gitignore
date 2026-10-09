@@ -12,3 +12,6 @@ additional_files/
 
 # local tool settings
 .claude/
+
+# unit test build output (python3 tests/run_tests.py)
+tests/build/

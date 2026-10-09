@@ -1,3 +1,6 @@
 [submodule "pi/embedded-i2c-scd4x"]
 	path = pi/embedded-i2c-scd4x
 	url = https://github.com/Sensirion/embedded-i2c-scd4x
+[submodule "tests/googletest"]
+	path = tests/googletest
+	url = https://github.com/google/googletest

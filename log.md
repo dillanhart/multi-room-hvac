@@ -402,7 +402,7 @@ Switching logic reviewed by Claude (read + `-Wall -Wextra`), fixed by user/Claud
 Worked: 3-read trust, short error blips, step change rejected then re-accepted. Open:
 
 - `MIN_VALID_TEMP` = 50 °F: a house at 49 °F reads as a sensor fault → `no_data` → idle, so heat stops while pipes freeze. Lower the bound.
-- `consistent` isn't reset when trust drops from age: after a 4 min outage the first good read is trusted at once, not after 3.
+- ~~`consistent` isn't reset when trust drops from age: after a 4 min outage the first good read is trusted at once, not after 3.~~ Fixed 10-08 by user (braces added after a test caught the first attempt); `RegainsTrustOnlyAfterConsistentReadsFollowingOutage` passes.
 - Nothing flags a flat/stuck sensor (3 h of identical 68.0 °F stayed trusted). `PROGRESS_WINDOW` / `PROGRESS_MIN_DELTA` are defined in `constants.h` but unused; the check needs `sys_status` and `cycle_start`, which `update_node` doesn't see.
 - Rate limit is 1.1 °F per 10 s read: a 1.5 °F step drops trust for ~30 s, and with one sensor that means idle.
 - `fails_in_row` / `MAX_SENSOR_FAILS` unused; `started_at` not reset after `get_sensor_data` restarts measuring.
@@ -414,4 +414,71 @@ Worked: 3-read trust, short error blips, step change rejected then re-accepted. 
 - `hour_of_day()` counts 9 pm–midnight as day.
 - Away expiry and persisted settings must use wall-clock time (`now_ms()` resets at boot; the Pi has no RTC).
 - Weather gate: fail open on a stale or failed fetch; consider a margin/ceiling so the gate can't hold the house far from setpoint.
-- Remaining work: loop restructure (`poll()`, SIGTERM → relays off), tests for `test_switch` (starting 10-07), setpoint validation, networking (API, satellite polling, persistence), weather gate, away/return, log ring, web apps.
+- Remaining work: loop restructure (`poll()`, SIGTERM → relays off), ~~tests for `test_switch` (starting 10-07)~~ (done 10-08, exact boundaries still to write), setpoint validation, networking (API, satellite polling, persistence), weather gate, away/return, log ring, web apps.
+
+## 2026-10-07 — Unit test harness (googletest)
+
+Built by Claude; test cases are the user's.
+
+- googletest v1.17.0 as a submodule at `tests/googletest`. `python3 tests/run_tests.py` builds and runs on the dev machine (gtest compiled once into `tests/build/`; extra args go to the binary, e.g. `--gtest_filter`).
+- Links `pi/control.cpp` + `pi/validation.cpp` against `tests/fake_relay.cpp` (link seam: same `relay.h` API, no GPIO, can force a failure). First time the control code has linked off the Pi.
+- Two example tests pass (`local_sensor_status` error; `apply_status` leaves timers alone on relay failure). `test_switch` / `update_node` cases still to write.
+- `get_HVAC_command` can't be tested deterministically yet: `hour_of_day()` reads the wall clock.
+
+## 2026-10-08 — `test_switch` tests: standard operation
+
+Cases chosen by user, written by Claude. 12 pass (6 sequences × heat/cool), driven through `test_switch` + `apply_status` like `main()`'s loop:
+restart via idle / via fan after min-off, heat ↔ cool via idle, restart via idle / via fan blocked within min-off, max-run turns off.
+
+Not covered yet: min-on blocking, conflicting command (heat ↔ cool direct), em heat, fan max-run, `no_data`, exact boundaries. Found while writing: circulating → heating/cooling leaves the fan relay on.
+
+### Later 10-08 — remaining `test_switch` situations
+
+Written by Claude; user decided fan relay must be off during a heat/cool call. 28 pass, 2 fail, 1 disabled.
+
+- Added: min-on blocks idle/fan, `no_data` → idle after min-on, conflicting call (heat ↔ cool), em heat (from idle, over heating, em → heating keeps max-run clock, max-run, cooling → em never closes both relays), fan only (from idle, min-on, max-run).
+- **Failing (heat + cool):** fan → heat/cool leaves the fan relay on; `apply_status` needs to drop it.
+- **Disabled:** em heat staying off after max-run (known open item; enabling it shows it fails today).
+- Test current behavior, still undecided: conflicting call goes idle without min-on; fan max-run stops it for one pass.
+
+### Later 10-08 — decisions on undecided tests
+
+- Heat ↔ cool call going straight to idle (skips min-on): design decision, test kept.
+- Fan stopping for one pass at max-run: bug, fix not chosen. Test now `DISABLED_MaxRunDoesNotFlipFlop` (fails if enabled; doesn't presume a fix).
+
+## 2026-10-08 — Sensor health tests; TODO.md
+
+Written by Claude; the outage case was the user's. 39 pass, 3 fail, 2 disabled.
+
+- 13 `update_node` / `local_sensor_status` tests: 3-read trust, warming, error before any read, blip, outage past `MAX_READING_AGE`, regain after outage, `fails_in_row`, out of range, jump then new level accepted, slow change stays trusted.
+- User's fix for trust coming back on the first read after an outage: **works** (`RegainsTrustOnlyAfterConsistentReadsFollowingOutage` passes).
+- **But it breaks short blips:** the `if` has no braces, so `consistent = 0` runs on every error. Trust drops on the first good read after a one-read blip. `ShortErrorBlipKeepsTrust` fails; gcc warns `-Wmisleading-indentation`.
+- [TODO.md](TODO.md) started: current bugs and to-dos, pulled from the open items above. Log keeps the history.
+
+## 2026-10-08 — Rest of the testable code
+
+Written by Claude. 88 tests: 86 pass, 2 fail (fan relay, known), 2 disabled.
+
+- User added the missing braces in `update_node`'s error branch: `ShortErrorBlipKeepsTrust` now passes.
+- `get_HVAC_command` (13): each command, deadband, spread fan, `no_data`, weighting, untrusted sensors left out of average and spread. Equal day/night weights so `hour_of_day()` can't affect results. Records current behavior on two undecided cases (weight-0 sensor, cool before em heat).
+- `apply_status` direct (13): timer stamps for 12 switches (table-driven), fan never turned on if `all_off()` fails.
+- `net.cpp` over localhost (7): status reply format, `nc`-style empty request, short buffer truncated + terminated, refused/bad address/zero-length buffer, `net_serve(-1)` keeps timing.
+- Real `relay.cpp` (11), first time tested anywhere: a second binary (`relay_tests`) links it against `fake_gpiod.cpp` (copy of the Pi's `gpiod.h` in `tests/gpiod/`). Interlock both ways (pin never written), active-low outputs starting off, failed write, `all_off` keeps going past a failure, close releases.
+- `update_node` (2): warming drops trust; same-timestamp reads.
+
+### Later 10-08 — weight 0
+
+- Decided: weight 0 = sensor deliberately ignored. `OnlyZeroWeightSensorIsNoData` relabeled by design.
+- ~~Open: an ignored (weight 0) sensor still counts toward the fan spread.~~ Closed 10-08: weight 0 is never configured.
+
+## 2026-10-08 — Fan design question; test coverage wrap-up
+
+Design only, nothing built.
+
+- **Fan keeps causing bugs** (relay left on, max-run blip, timer special cases). Raised by Claude: treat the fan as its own control alongside heat/cool (how real thermostats do auto/on; "orthogonal regions" in statecharts) instead of a `circulating` status in the HVAC state machine. Undecided; the fan max-run fix waits on it.
+- **Deliberately not unit-tested:** day/night weighting (`hour_of_day()` reads the clock), `sensor.c` (needs a fake Sensirion I2C layer), `main()` (logic not callable until the loop restructure). Listed in TODO.md.
+- TODO.md gained a "Decide" section for tests that record current behavior; only cool-before-em-heat remains.
+
+### Open
+
+- ~~Everything from 10-07 on is uncommitted: googletest submodule, `tests/`, TODO.md, `.gitignore`, user's `validation.cpp` fix.~~ Committed 10-08 on branch `unit-tests`.
