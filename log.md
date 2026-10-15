@@ -482,3 +482,34 @@ Design only, nothing built.
 ### Open
 
 - ~~Everything from 10-07 on is uncommitted: googletest submodule, `tests/`, TODO.md, `.gitignore`, user's `validation.cpp` fix.~~ Committed 10-08 on branch `unit-tests`.
+
+## 2026-10-12 — Em heat / fan bypass; fan relay fix
+
+Design changes by the user; test updates and the `apply_status` move by Claude. 89 pass, 0 fail, 0 disabled.
+
+- **Em heat and fan now bypass min-off, min-on and max-run** in `test_switch`. Closes the em-heat restart-after-max-run and fan flip-flop bugs by removing max-run from both. Tests relabeled by design: `EmergencyHeat.RunsPastMaxRun`, `FanOnly.RunsPastMaxRun`, `TestSwitch.FanSkipsMinOn`.
+- **Fan relay left on after circulating → heat/cool: fixed.** User's fix was in `main()`; moved into `apply_status` (fan off before heat/cool on, like the circulating case drops heat/cool first) so `RestartsViaFanAfterMinOff` covers it.
+- 9 pm–midnight counting as day: by design (user's schedule).
+- `MIN_VALID_TEMP` 50 → 30 °F. `control.cpp` includes trimmed.
+
+## 2026-10-15 — Frozen sensor check; fault-detection design (in progress)
+
+Frozen check written by Claude to the user's spec. 94 pass, 0 fail, 0 disabled.
+
+- **Frozen sensor:** `STUCK_READS` (3) readings in a row with temp, humidity **and** CO2 all identical → untrusted, `consistent` set to `CONSISTENT_READS - STUCK_RECOVERY_READS` (−7), so 10 good reads to trust again. Staying frozen keeps resetting it; a rejected read doesn't shorten it. All three because a rounded temp alone can repeat by chance.
+- Mostly guards satellites resending a stale value: the local SCD41 already fails on "no new measurement ready".
+- Test fixture now bumps CO2 1 ppm per read (identical reads would trip the check).
+
+Design discussion, not settled:
+
+- Max-run as a fault detector → replace with a progress check (no room temp change while running). Old Honeywell on W is the freeze backstop, so the Pi may stop the furnace on a suspected fault.
+- No supply-air sensor (user's call). Kitchen (oven) and office (PC) can only add heat: they can hide a dead furnace, not fake one.
+- Dead furnace vs. losing to the cold: outdoor temp from NWS hourly forecast (`api.weather.gov`, hourly fetch; on failure use the multi-day forecast already fetched).
+- Planned `error` status, auto-retry after 30-60 min.
+- Overheating from a low-reading sensor: user's view is no separate ceiling needed (a low enough reading to call heat would be untrusted or near setpoint).
+
+### Open
+
+- Progress check + `error` status: held until after bench tests.
+- Retry cap / alerting; iced AC coil needs thaw time before retry.
+- Weather fetch: HTTPS + JSON library choice; NWS wants an identifying User-Agent.

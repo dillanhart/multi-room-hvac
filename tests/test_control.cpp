@@ -188,12 +188,13 @@ TEST_P(TestSwitch, MinOnBlocksIdle) {
     EXPECT_EQ(run(hvac_command::none, MIN_ON_TIME), hvac_status::idle);  // now past min-on
 }
 
-TEST_P(TestSwitch, MinOnBlocksFan) {
+// by design: a fan call bypasses min-on and takes over at once
+TEST_P(TestSwitch, FanSkipsMinOn) {
     ASSERT_EQ(run(e.command, PAST_MIN_OFF), e.status);
 
-    EXPECT_EQ(run(hvac_command::fan, WITHIN_MIN_ON), e.status);
-    EXPECT_EQ(relay_get(e.relay_pin), 1);
-    EXPECT_EQ(run(hvac_command::fan, MIN_ON_TIME), hvac_status::circulating);
+    EXPECT_EQ(run(hvac_command::fan, WITHIN_MIN_ON), hvac_status::circulating);
+    EXPECT_EQ(relay_get(e.relay_pin), 0);
+    EXPECT_EQ(relay_get(RELAY_FAN), 1);
 }
 
 // no sensor data acts like "none": finish min-on, then idle
@@ -248,20 +249,12 @@ TEST_F(EmergencyHeat, DropToHeatingKeepsMaxRunClock) {
     EXPECT_EQ(relay_get(RELAY_HEAT), 0);
 }
 
-TEST_F(EmergencyHeat, TurnsOffAfterMaxRun) {
+// by design: em heat has no max-run; it runs as long as it's called for
+TEST_F(EmergencyHeat, RunsPastMaxRun) {
     ASSERT_EQ(run(hvac_command::emergency_heat, SEC), hvac_status::em_heating);
 
-    EXPECT_EQ(run(hvac_command::emergency_heat, PAST_MAX_RUN), hvac_status::idle);
-    EXPECT_EQ(relay_get(RELAY_HEAT), 0);
-}
-
-// Known open item (log.md): after max-run, em heat restarts on the very next pass.
-// DISABLED_ keeps it out of the run until there's a fix; gtest still reports it.
-TEST_F(EmergencyHeat, DISABLED_StaysOffRightAfterMaxRun) {
-    ASSERT_EQ(run(hvac_command::emergency_heat, SEC), hvac_status::em_heating);
-    ASSERT_EQ(run(hvac_command::emergency_heat, PAST_MAX_RUN), hvac_status::idle);
-
-    EXPECT_EQ(run(hvac_command::emergency_heat, ONE_PASS), hvac_status::idle);
+    EXPECT_EQ(run(hvac_command::emergency_heat, PAST_MAX_RUN), hvac_status::em_heating);
+    EXPECT_EQ(relay_get(RELAY_HEAT), 1);
 }
 
 // Cooling -> em heat is left to setpoint validation (log.md); whatever happens,
@@ -290,13 +283,13 @@ TEST_F(FanOnly, MinOnBlocksIdle) {
     EXPECT_EQ(relay_get(RELAY_FAN), 0);
 }
 
-// Known bug (log.md): max-run stops the fan for one pass, then idle -> fan restarts it.
-// Doesn't pick a fix: whatever max-run does to the fan, the next pass must agree with it.
-TEST_F(FanOnly, DISABLED_MaxRunDoesNotFlipFlop) {
+// by design: the fan has no max-run (this also closed the one-pass flip-flop at max-run)
+TEST_F(FanOnly, RunsPastMaxRun) {
     ASSERT_EQ(run(hvac_command::fan, SEC), hvac_status::circulating);
 
-    hvac_status at_max_run = run(hvac_command::fan, PAST_MAX_RUN);
-    EXPECT_EQ(run(hvac_command::fan, ONE_PASS), at_max_run);
+    EXPECT_EQ(run(hvac_command::fan, PAST_MAX_RUN), hvac_status::circulating);
+    EXPECT_EQ(run(hvac_command::fan, ONE_PASS), hvac_status::circulating);
+    EXPECT_EQ(relay_get(RELAY_FAN), 1);
 }
 
 // ---- get_HVAC_command ----

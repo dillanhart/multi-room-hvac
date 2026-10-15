@@ -21,8 +21,14 @@ sensor_status local_sensor_status(const sensor_result& reading, long long starte
 }
 
 
+// a real sensor jitters, so all three values exactly matching means a frozen value
+static bool same_reading(const sensor_result& a, const sensor_result& b) {
+    return a.temp == b.temp && a.hum == b.hum && a.CO2 == b.CO2;
+}
+
+
 // apply one reading to a node: range check, jump check against the previous
-// reading, and CONSISTENT_READS good readings in a row before it is trusted
+// reading, frozen check, and CONSISTENT_READS good readings in a row before it is trusted
 void update_node(sensor_node& node, const sensor_result& reading, sensor_status status, long long now) {
     sensor_health& h = node.health;
     h.status = status;
@@ -56,13 +62,24 @@ void update_node(sensor_node& node, const sensor_result& reading, sensor_status 
         rate_ok = std::fabs(reading.temp - h.last_temp) / minutes <= MAX_TEMP_RATE;
     }
 
-    if (in_range && rate_ok) {
+    // node.data is the previous successful reading whenever has_last is set
+    h.identical_in_row = (h.has_last && same_reading(reading, node.data)) ? h.identical_in_row + 1 : 1;
+
+    // frozen: start the count below zero so it takes STUCK_RECOVERY_READS good reads
+    // after the value moves again; staying frozen keeps resetting it
+    constexpr int STUCK_PENALTY = CONSISTENT_READS - STUCK_RECOVERY_READS;
+    if (h.identical_in_row >= STUCK_READS) {
+        if (h.consistent > STUCK_PENALTY)
+            printf("%s: frozen at %.2f F, %.1f %%, %d ppm\n", node.name.c_str(),
+                   reading.temp, reading.hum, reading.CO2);
+        h.consistent = STUCK_PENALTY;
+    } else if (in_range && rate_ok) {
         h.consistent++;
     } else {
         if (h.consistent > 0)
             printf("%s: rejected %.1f F (%s)\n", node.name.c_str(), reading.temp,
                    in_range ? "jumped too fast" : "out of range");
-        h.consistent = 0;
+        h.consistent = std::min(h.consistent, 0);  // keep a frozen sensor's penalty
     }
 
     h.last_temp = reading.temp;

@@ -30,11 +30,12 @@ protected:
     sensor_node node = { .name = "test", .weight_day = 1, .weight_night = 1 };
     long long now = 0;
     const sensor_health& h = node.health;
+    int co2 = 600;  // bumped every read: a real sensor never repeats all three values
 
     // wait `wait` ms, then apply a successful read of `temp`
     void good(float temp = ROOM, long long wait = ONE_PASS) {
         now += wait;
-        sensor_result r = { .temp = temp, .hum = 40, .CO2 = 600, .read_ok = 1 };
+        sensor_result r = { .temp = temp, .hum = 40, .CO2 = co2++, .read_ok = 1 };
         update_node(node, r, sensor_status::ok, now);
     }
 
@@ -47,8 +48,15 @@ protected:
 
     void warming(float temp = ROOM) {
         now += ONE_PASS;
-        sensor_result r = { .temp = temp, .hum = 40, .CO2 = 600, .read_ok = 1 };
+        sensor_result r = { .temp = temp, .hum = 40, .CO2 = co2++, .read_ok = 1 };
         update_node(node, r, sensor_status::warming, now);
+    }
+
+    // apply the last successful reading again, exactly (temp, humidity and CO2)
+    void repeat() {
+        now += ONE_PASS;
+        sensor_result r = node.data;
+        update_node(node, r, sensor_status::ok, now);
     }
 
     // CONSISTENT_READS good reads at ROOM: the normal path to trusted
@@ -183,4 +191,72 @@ TEST_F(SensorHealth, SlowChangeStaysTrusted) {
         good(ROOM + i * 0.5f);  // 0.5 F per 10 s = 3 F/min, under MAX_TEMP_RATE
         EXPECT_TRUE(h.trusted) << "at " << ROOM + i * 0.5f << " F";
     }
+}
+
+// ---- frozen sensor ----
+
+constexpr int STUCK_PENALTY = CONSISTENT_READS - STUCK_RECOVERY_READS;
+
+TEST_F(SensorHealth, FrozenAfterStuckReadsIdentical) {
+    become_trusted();
+    for (int i = 1; i < STUCK_READS; i++) {
+        EXPECT_TRUE(h.trusted) << i << " identical so far";
+        repeat();
+    }
+    EXPECT_FALSE(h.trusted);
+    EXPECT_EQ(h.consistent, STUCK_PENALTY);
+}
+
+TEST_F(SensorHealth, FrozenNeedsRecoveryReadsToTrustAgain) {
+    become_trusted();
+    for (int i = 1; i < STUCK_READS; i++)
+        repeat();
+    ASSERT_FALSE(h.trusted);
+
+    for (int i = 0; i < STUCK_RECOVERY_READS - 1; i++) {
+        good();
+        EXPECT_FALSE(h.trusted) << "after good read " << i + 1;
+    }
+    good();
+    EXPECT_TRUE(h.trusted);
+}
+
+// the recovery count starts from the first read that moves, not the first frozen one
+TEST_F(SensorHealth, StayingFrozenKeepsResettingThePenalty) {
+    become_trusted();
+    for (int i = 0; i < STUCK_READS + 20; i++)
+        repeat();
+
+    for (int i = 0; i < STUCK_RECOVERY_READS - 1; i++)
+        good();
+    EXPECT_FALSE(h.trusted);
+    good();
+    EXPECT_TRUE(h.trusted);
+}
+
+// a rejected read (jump or out of range) doesn't shorten a frozen sensor's penalty
+TEST_F(SensorHealth, RejectedReadKeepsFrozenPenalty) {
+    become_trusted();
+    for (int i = 1; i < STUCK_READS; i++)
+        repeat();
+
+    good(ROOM + 5);  // 30 F/min jump
+    EXPECT_EQ(h.consistent, STUCK_PENALTY);
+    for (int i = 0; i < STUCK_RECOVERY_READS - 1; i++)
+        good(ROOM + 5);
+    EXPECT_FALSE(h.trusted);
+    good(ROOM + 5);
+    EXPECT_TRUE(h.trusted);
+}
+
+// only all three matching counts: one value moving means the sensor is live
+TEST_F(SensorHealth, OneValueMovingIsNotFrozen) {
+    become_trusted();
+    for (int i = 0; i < STUCK_READS + 2; i++) {
+        sensor_result r = node.data;
+        r.hum += 0.1f;  // temp and CO2 repeat exactly
+        now += ONE_PASS;
+        update_node(node, r, sensor_status::ok, now);
+    }
+    EXPECT_TRUE(h.trusted);
 }

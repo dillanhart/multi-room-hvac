@@ -1,23 +1,18 @@
-#include <stdio.h>
-#include "sensor.h"
 #include "control.h"
-#include <string>
-#include <vector>
-#include <stdbool.h>
-#include <chrono>
-#include <iostream>
-#include <algorithm>
+#include "validation.h"   // sensor_node
+#include "constants.h"    // MIN_HEAT, FAN_TRIGGER, cycle timings
+#include "relay.h"        // relay_set, all_off
+
+#include <algorithm>      // std::minmax_element
+#include <ctime>          // std::time, std::localtime
 #include <optional>
-#include <cmath>
-#include "validation.h"
-#include "constants.h"
-#include "relay.h"
+#include <vector>
 
 // return int of the hour for determining dynamic weights
 static bool hour_of_day (){
     std::time_t now = std::time(nullptr);
     std::tm* local_time = std::localtime(&now);
-    return local_time->tm_hour > 8;
+    return local_time->tm_hour >= 8;
 }
 
 
@@ -102,12 +97,12 @@ static hvac_status status_for(hvac_command command) {
 hvac_status test_switch (hvac_status sys_status, hvac_command command, long long cycle_start, long long now_ms, long long cycle_end){
     hvac_status requested_status = status_for(command);
     hvac_status return_status;
+    
+    // for emergency heating and circulating fan bypass min_off_time and max_run_time
+    if (command == hvac_command::emergency_heat || command == hvac_command::fan){
+        return_status = requested_status;
+
     // if the system is turning on has it been enough time since it turned off to switch
-    if (command == hvac_command::emergency_heat){
-        return_status = hvac_status::em_heating;
-        if (now_ms > cycle_start + MAX_RUN_TIME && requested_status == sys_status){
-            return_status = hvac_status::idle;
-        }
     } else if (sys_status == hvac_status::idle){
         if (now_ms > cycle_end + MIN_OFF_TIME || requested_status == hvac_status::circulating){
             return_status = requested_status;
@@ -143,9 +138,16 @@ int apply_status(hvac_status old_status, hvac_status new_status, long long now, 
     int relay_success = -1;
     switch (new_status){
         case hvac_status::idle:        relay_success = all_off(); break;
-        case hvac_status::cooling:     relay_success = relay_set(RELAY_COOL, 1); break;
+        case hvac_status::cooling:
+            // fan may still be on from circulating; drop it first
+            relay_success = relay_set(RELAY_FAN, 0);
+            if (relay_success == 0) relay_success = relay_set(RELAY_COOL, 1);
+            break;
         case hvac_status::em_heating:
-        case hvac_status::heating:     relay_success = relay_set(RELAY_HEAT, 1); break;
+        case hvac_status::heating:
+            relay_success = relay_set(RELAY_FAN, 0);
+            if (relay_success == 0) relay_success = relay_set(RELAY_HEAT, 1);
+            break;
         case hvac_status::circulating:
             // heat/cool may still be on from the previous status; drop them first
             relay_success = all_off();

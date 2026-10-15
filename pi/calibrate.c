@@ -10,7 +10,7 @@
  *            embedded-i2c-scd4x/scd4x_i2c.c embedded-i2c-scd4x/sensirion_i2c.c \
  *            embedded-i2c-scd4x/sensirion_common.c \
  *            embedded-i2c-scd4x/sample-implementations/linux_user_space/sensirion_i2c_hal.c
- * Run:   ./calibrate [target_ppm]   (default 425 ppm, typical outdoor air)
+ * Run:   ./calibrate [target_ppm]   (default 438 ppm, typical outdoor air)
  */
 
 #include <stdbool.h>        // bool

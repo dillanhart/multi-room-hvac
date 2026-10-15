@@ -10,11 +10,13 @@ constexpr int MIN = 60 * SEC;
 
 // sensor validation
 constexpr int SENSOR_WARMUP = 3 * MIN;          // local SCD41 settling time after a fresh start
-constexpr float MIN_VALID_TEMP = 50;            // degrees F; outside this range = bad reading
+constexpr float MIN_VALID_TEMP = 30;            // degrees F; outside this range = bad reading
 constexpr float MAX_VALID_TEMP = 110;
 constexpr float MAX_TEMP_RATE = 20.0f / 3;      // degrees F per minute (20 degrees in 3 mins = failing)
 constexpr int CONSISTENT_READS = 3;             // good readings in a row before a sensor is trusted
 constexpr int MAX_READING_AGE = 3 * MIN;        // keep using the last good reading this long after failures
+constexpr int STUCK_READS = 3;                  // identical readings (temp, humidity and CO2) in a row = frozen sensor
+constexpr int STUCK_RECOVERY_READS = 10;        // good readings in a row before a frozen sensor is trusted again
 
 enum class sensor_status { ok, warming, error };
 
@@ -26,7 +28,8 @@ struct sensor_health {
     float last_temp = 0;           // that read's temperature, for the jump check
     bool has_last = false;         // false until the first successful read
     int fails_in_row = 0;
-    int consistent = 0;            // good readings in a row
+    int consistent = 0;            // good readings in a row; negative after a frozen sensor
+    int identical_in_row = 0;      // readings in a row exactly matching the one before (incl. this one)
     bool trusted = false;          // the only thing control logic checks
 };
 

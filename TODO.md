@@ -6,18 +6,13 @@ Tests: `python3 tests/run_tests.py`. A failing or `DISABLED_` test is named next
 
 ## Bugs
 
-- **Fan relay stays on during heat/cool.** `apply_status` turns on Heat or Cool without turning off Fan after circulating. *Test: `TestSwitch.RestartsViaFanAfterMinOff` (fails, heat + cool).*
-- **Em heat restarts one pass after max-run.** Needs a fault state that stays off, or a progress check. *Test: `EmergencyHeat.DISABLED_StaysOffRightAfterMaxRun`.*
-- **Fan max-run stops it for one pass, then idle → fan restarts it.** Fix not chosen. *Test: `FanOnly.DISABLED_MaxRunDoesNotFlipFlop`.*
-- **Cold house reads as a sensor fault.** `MIN_VALID_TEMP` = 50 °F: below it → untrusted → `no_data` → idle, so heat stops when it's needed most (frozen pipes).
-- **`hour_of_day()` counts 9 pm–midnight as day.** It also reads the wall clock, so `get_HVAC_command` can't be tested deterministically.
+- **`hour_of_day()` reads the wall clock**, so `get_HVAC_command` can't be tested deterministically.
 - **Rate limit too tight for one sensor.** 1.1 °F per 10 s read: a 1.5 °F step drops trust for ~30 s, and with one sensor that means idle.
 - `started_at` isn't reset when `get_sensor_data` restarts measuring, so the warm-up is skipped.
-- `calibrate.c`: comment says default 425 ppm, `DEFAULT_TARGET_PPM` is 438.
 
 ## Safety
 
-- Stuck/flat sensor detection: `PROGRESS_WINDOW` / `PROGRESS_MIN_DELTA` defined but unused (needs `sys_status` + `cycle_start`, which `update_node` doesn't see).
+- Progress check (HVAC running but room temps not moving): `PROGRESS_WINDOW` / `PROGRESS_MIN_DELTA` defined but unused. Held until after bench tests. Feeds a planned `error` status with auto-retry (30-60 min, longer than min-off); thresholds scaled by outdoor temp from the weather API.
 - `fails_in_row` / `MAX_SENSOR_FAILS` unused.
 - Software watchdog (systemd `WatchdogSec`): a hung loop holds a relay closed past max-run.
 - SIGTERM → relays off. Relay state after `kill -9` while energized is untested.
@@ -57,7 +52,3 @@ Tests: `python3 tests/run_tests.py`. A failing or `DISABLED_` test is named next
 
 - SPI clock is 8 MHz in `config.txt`, but 32 MHz worked; restore it or find out why 8 is needed.
 - Idle blanking unverified with `backlight-gpio` bound.
-
-## Cleanup
-
-- `control.cpp` includes `<chrono>` but uses `<ctime>` functions.
