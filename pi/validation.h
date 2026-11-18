@@ -1,12 +1,8 @@
 #ifndef VALIDATION_H
 #define VALIDATION_H
 
-#include <string>
 #include "sensor.h"
-
-// all times in milliseconds
-constexpr int SEC = 1000;
-constexpr int MIN = 60 * SEC;
+#include "constants.h"    // SEC, MIN, sensor_status, sensor_health, sensor_node
 
 // sensor validation
 constexpr int SENSOR_WARMUP = 3 * MIN;          // local SCD41 settling time after a fresh start
@@ -17,30 +13,6 @@ constexpr int CONSISTENT_READS = 3;             // good readings in a row before
 constexpr int MAX_READING_AGE = 3 * MIN;        // keep using the last good reading this long after failures
 constexpr int STUCK_READS = 3;                  // identical readings (temp, humidity and CO2) in a row = frozen sensor
 constexpr int STUCK_RECOVERY_READS = 10;        // good readings in a row before a frozen sensor is trusted again
-
-enum class sensor_status { ok, warming, error };
-
-// keep metadata for the sensor to see if it is reading properly
-struct sensor_health {
-    sensor_status status = sensor_status::error;
-    long long started_at = 0;      // local sensor only: when it started measuring (set from scd41_start)
-    long long last_read_at = 0;    // time of the last successful read
-    float last_temp = 0;           // that read's temperature, for the jump check
-    bool has_last = false;         // false until the first successful read
-    int fails_in_row = 0;
-    int consistent = 0;            // good readings in a row; negative after a frozen sensor
-    int identical_in_row = 0;      // readings in a row exactly matching the one before (incl. this one)
-    bool trusted = false;          // the only thing control logic checks
-};
-
-
-struct sensor_node {
-    std::string name;
-    sensor_result data;            // last successful reading; use only when health.trusted
-    int weight_day;
-    int weight_night;
-    sensor_health health;
-};
 
 sensor_status local_sensor_status(const sensor_result& reading, long long started_at, long long now);
 

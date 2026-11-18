@@ -513,3 +513,37 @@ Design discussion, not settled:
 - Progress check + `error` status: held until after bench tests.
 - Retry cap / alerting; iced AC coil needs thaw time before retry.
 - Weather fetch: HTTPS + JSON library choice; NWS wants an identifying User-Agent.
+
+## 2026-11-17 — Settings files (set points, vacations)
+
+Design by the user; code and tests written by Claude. 113 pass (24 new), 0 fail.
+
+- `data_store.h/.cpp`: load at startup, validate requests, atomic write, retry on failed write, vacation cleanup, `is_away()`, US time ↔ Unix. Replaces the user's draft `get_set_points` (its `process_request` didn't compile: `json::parse` on an already-parsed `json`).
+- Set points: heat alone pushes AC to `heat + MIN_DEAD_BAND`, AC alone pushes heat down; any push out of range rejects the request. `AC_MAX` = 90. `MIN_HEAT + MIN_DEAD_BAND` floor on night heat kept, by design.
+- Change order: validate → RAM → disk. A failed write keeps the new values in use and retries each pass (user's call: they're validated and are what's wanted).
+- Vacations: Unix seconds on disk, US format (`MM/DD/YYYY HH:MM`) in the API. End after start; overlaps kept as separate blocks but act as one span; 2 h pre-conditioning lead, fixed. Finished blocks deleted. Away temps global (freeze protection only).
+- Missing/bad `hvac_points.json` → defaults. Bad vacation block → dropped, others load (Claude's choice, not discussed).
+- **Bug found:** `deploy.sh`'s `rsync --delete` would have overwritten the Pi's live settings with `pi/`'s example files on every deploy. Both files are now excluded.
+- `main.cpp` loads settings and uses `settings.points`; cleanup + retry run each pass. Not built or run on the Pi yet.
+
+### Open
+
+- Away and night set points not applied in control yet (TODO.md).
+- HTTP handlers exist; no server to call them.
+- Wall clock before NTP sync could delete vacations early.
+
+## 2026-11-18 — Night, away, mode, season lockout, weather gate
+
+Design by the user; code and tests written by Claude. 155 pass (31 new), 0 fail.
+
+- `get_HVAC_command(sensors, points, is_night, allowed, outside_temp)`: takes the set points struct; night drops the whole band; manual/season mode; 5° weather gate both ways on the night-adjusted points; em heat never gated. The clock is read in `main` (`is_night_now()`), which closes the "`hour_of_day()` reads the clock" bug; day/night weighting now tested.
+- Away: `AWAY_POINTS` {62, 90, 0, fan off} replaces the user's points. Fan blocked by a `fan_allowed` bool (user rejected a magic threshold).
+- Mode `auto`/`heat`/`cool`/`both` in `hvac_points.json`; manual stays until set back. Old files without it load as `auto`.
+- `weather.json` (new, `weather.cpp`): a week of hourly forecast, refreshed daily. Season from the average daily low: < 55 heat only, > 65 cool only. No expiry (user: AC in winter is the failure that matters).
+- Season data kept out of `hvac_set_points` (user had proposed it): the away swap would have dropped it, and the daily weather write would rewrite user settings.
+- Claude's choices, not discussed: no weather at all → heat only in auto; days with < 20 hours left out of the average; 65 picked from the user's 60-65.
+
+### Open
+
+- Weather fetch not written (`weather_due()` / `update_weather()` ready). Until then auto = heat only.
+- `SUMMER_AVG_LOW` 65 untested against a real season.

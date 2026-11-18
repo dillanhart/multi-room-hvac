@@ -6,7 +6,7 @@ SCD4X = "embedded-i2c-scd4x"
 BUILD = "build"  # object files go here
 
 # Our code, compiled as C++
-CPP_SOURCES = ["main.cpp", "control.cpp", "relay.cpp", "net.cpp"]
+CPP_SOURCES = ["main.cpp", "control.cpp", "relay.cpp", "net.cpp", "data_store.cpp", "weather.cpp"]
 
 # C code, compiled as C: our sensor wrapper and the Sensirion driver
 C_SOURCES = [

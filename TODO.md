@@ -6,7 +6,6 @@ Tests: `python3 tests/run_tests.py`. A failing or `DISABLED_` test is named next
 
 ## Bugs
 
-- **`hour_of_day()` reads the wall clock**, so `get_HVAC_command` can't be tested deterministically.
 - **Rate limit too tight for one sensor.** 1.1 °F per 10 s read: a 1.5 °F step drops trust for ~30 s, and with one sensor that means idle.
 - `started_at` isn't reset when `get_sensor_data` restarts measuring, so the warm-up is skipped.
 
@@ -27,7 +26,6 @@ Tests: `python3 tests/run_tests.py`. A failing or `DISABLED_` test is named next
 ## Tests to write
 
 - `test_switch` at the exact boundaries (`MIN_ON_TIME`, `MIN_OFF_TIME`, `MAX_RUN_TIME`; code uses `>` / `<=`).
-- `get_HVAC_command` day/night weighting (blocked on `hour_of_day()` reading the clock; everything else is tested with equal day/night weights).
 - `sensor.c` (start/retry logic needs a fake Sensirion I2C layer) and `main()` (logic can't be called from a test until the loop restructure).
 
 ## Decide (tests record current behavior)
@@ -37,14 +35,16 @@ Tests: `python3 tests/run_tests.py`. A failing or `DISABLED_` test is named next
 ## Design, still open
 
 - Fan: `circulating` as a status in the HVAC state machine vs. a separate fan control alongside it. Zone-spread fan logic not settled; `FAN_CLEAR` hysteresis unused.
-- HTTP server library (Mongoose vs libmicrohttpd); settings file format.
+- HTTP server library (Mongoose vs libmicrohttpd).
 
 ## Features
 
 - Loop restructure: `poll()` instead of `sleep()`.
-- Networking: setpoint API, satellite polling (map ESP32 `"status"` to `sensor_status`, then `update_node(nodes[1..2], …)`), persisted settings.
-- Weather gate: fail open on a stale or failed fetch; margin/ceiling so it can't hold the house far from setpoint.
-- Away mode with expiry. Away expiry and persisted settings need wall-clock time (`now_ms()` resets at boot; no RTC).
+- Networking: setpoint API (handlers exist in `data_store.h`: `update_set_points`, `add/change/remove_vacation`, `settings_json`; need the HTTP server), satellite polling (map ESP32 `"status"` to `sensor_status`, then `update_node(nodes[1..2], …)`).
+- Weather fetch: once a day when `weather_due()`, hourly forecast → `update_weather()`. HTTPS + NWS User-Agent; the gate, season and storage are built and tested without it. Until it exists, auto mode is heat-only (no weather = no cooling); set the mode by hand.
+- `SUMMER_AVG_LOW` (65) is a first guess (user: 60-65); tune after a season.
+- Wall clock before NTP sync: no RTC, so right after boot `time()` can be wrong. A clock that runs ahead would delete vacations early (`remove_finished_vacations`). Consider waiting for sync (`timedatectl show -p NTPSynchronized`).
+- Install `nlohmann-json3-dev` on the Pi if a rebuild ever needs it (present in `.sysroot` as of 11-17).
 - Log ring, web apps.
 - Buttons (not yet purchased).
 

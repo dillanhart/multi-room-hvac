@@ -1,6 +1,5 @@
 #include "control.h"
-#include "validation.h"   // sensor_node
-#include "constants.h"    // MIN_HEAT, FAN_TRIGGER, cycle timings
+#include "constants.h"    // sensor_node, MIN_HEAT, FAN_TRIGGER, cycle timings
 #include "relay.h"        // relay_set, all_off
 
 #include <algorithm>      // std::minmax_element
@@ -8,24 +7,22 @@
 #include <optional>
 #include <vector>
 
-// return int of the hour for determining dynamic weights
-static bool hour_of_day (){
+bool is_night_now() {
     std::time_t now = std::time(nullptr);
     std::tm* local_time = std::localtime(&now);
-    return local_time->tm_hour >= 8;
+    return local_time->tm_hour < 8;
 }
 
 
 // calculate the weighted temp from trusted sensors;
 // std::nullopt if no sensor is trusted
-static std::optional<float> calculate_weighted_temperature(const std::vector<sensor_node>& nodes) {
+static std::optional<float> calculate_weighted_temperature(const std::vector<sensor_node>& nodes, bool is_night) {
     float total_weighted_temp = 0.0f;
     float total_weight = 0.0f;
-    bool is_day = hour_of_day();
 
     for (const auto& node : nodes) {
         if (node.health.trusted) {
-            int weight = is_day ? node.weight_day : node.weight_night;
+            int weight = is_night ? node.weight_night : node.weight_day;
             total_weighted_temp += (node.data.temp * weight);
             total_weight += weight;
         }
@@ -36,26 +33,37 @@ static std::optional<float> calculate_weighted_temperature(const std::vector<sen
 }
 
 
-hvac_command get_HVAC_command(const std::vector<sensor_node>& sensors, float heat_set, float ac_set) {
-    
+hvac_command get_HVAC_command(const std::vector<sensor_node>& sensors, const hvac_set_points& points,
+                              bool is_night, hvac_mode allowed, std::optional<float> outside_temp) {
+
     // 1. Get the aggregated data; no valid sensors means no decision
-    std::optional<float> weighted = calculate_weighted_temperature(sensors);
+    std::optional<float> weighted = calculate_weighted_temperature(sensors, is_night);
     if (!weighted) return hvac_command::no_data;
     float weighted_temp = *weighted;
 
     // 2. Extract raw temps for the "Fan" check
-    // (Assuming we still need the raw min/max for the fan logic)
     std::vector<float> raw_temps;
     for(const auto& s : sensors) {
         if(s.health.trusted) raw_temps.push_back(s.data.temp);
     }
 
-    // 3. Decision Logic
-    if (weighted_temp > ac_set) return hvac_command::cool;
-    if(weighted_temp < MIN_HEAT) return hvac_command::emergency_heat;
-    if (weighted_temp < heat_set) return hvac_command::heat;
-    
-    if (!raw_temps.empty()) {
+    // 3. Active set points: at night the whole band drops
+    float shift = is_night ? points.night_difference : 0;
+    float heat_set = points.heat_point - shift;
+    float ac_set = points.ac_point - shift;
+
+    // 4. What may run: mode/season, then the weather gate (skipped if outside temp unknown)
+    bool cool_ok = allowed != hvac_mode::heat &&
+                   !(outside_temp && *outside_temp <= ac_set - WEATHER_GATE_MARGIN);
+    bool heat_ok = allowed != hvac_mode::cool &&
+                   !(outside_temp && *outside_temp >= heat_set + WEATHER_GATE_MARGIN);
+
+    // 5. Decision Logic (em heat is never gated)
+    if (weighted_temp > ac_set && cool_ok) return hvac_command::cool;
+    if (weighted_temp < MIN_HEAT) return hvac_command::emergency_heat;
+    if (weighted_temp < heat_set && heat_ok) return hvac_command::heat;
+
+    if (points.fan_allowed && !raw_temps.empty()) {
         auto [min_it, max_it] = std::minmax_element(raw_temps.begin(), raw_temps.end());
         if (*max_it - *min_it > FAN_TRIGGER) return hvac_command::fan;
     }

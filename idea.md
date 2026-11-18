@@ -174,15 +174,31 @@ Control logic sees only trustworthy numbers: it checks one flag per sensor, `hea
 
 ### Persistent settings
 
-The Pi keeps its settings in a file so they survive a restart: heat setpoint, AC setpoint, and vacation mode (departure time, return time, away min/max temps, and a pre-conditioning lead time — how long before arrival away mode ends, which is what fixes the "miserable first hours back" problem).
+The Pi keeps its settings in two JSON files so they survive a restart (built 2026-11-17, `data_store.cpp`):
 
-- **Location:** `/var/lib/thermostat/` (standard for service state).
-- **Atomic writes:** write to a temp file, `fsync`, then `rename()` over the old one. A rename is all-or-nothing, so a power cut mid-save can't corrupt the setpoints.
-- **Validated on load**, falling back to built-in safe defaults (and logging it) if the file is missing or garbled.
-- **Written only on change**, not every loop — SD card wear.
-- **Only the Pi writes it.** The web UI sends a request; the Pi validates it (e.g. heat setpoint below AC setpoint by at least the deadband) and saves. One source of truth.
-- **Times stored as UNIX timestamps (UTC)** — no time-zone or DST bugs.
-- Format: `key=value` lines are easiest to parse by hand in C; JSON (via cJSON) if it's shared with the API code. *Open.*
+- **`hvac_points.json`:** `heat_point`, `ac_point`, `night_difference` (heat drops by this at night).
+- **`vacation.json`:** `next_id` plus a list of blocks (`block_id`, `vacation_start` = departure, `vacation_end` = return). Ids are never reused, so blocks can be edited or removed by id later.
+- **Location:** `~/thermostat/` next to the program (`DATA_DIR`). `deploy.sh` excludes both files, since an rsync push would otherwise overwrite live settings with the repo's examples.
+- **Format: JSON** (nlohmann/json), shared with the API code.
+- **Times:** Unix seconds in the file; the API takes and shows US local time (`12/25/2026 13:00`). The Pi's time zone is set locally and never changes. `mktime` with `tm_isdst = -1` handles DST; a time skipped by spring-forward is rejected.
+- **Read only at startup.** Missing or invalid `hvac_points.json` → struct defaults. Missing/invalid `vacation.json` → no vacations; a single invalid block is dropped and the rest load.
+- **Every change:** validate → update RAM → atomic write (temp file, `fsync`, `rename()`, `fsync` the directory). A rejected request changes neither RAM nor file.
+- **Failed write:** the new values are already validated and are what the user wants, so they stay in use. An unsaved flag is retried every loop pass, writing whatever is current (no queue). Logged when it fails and when it recovers. Only loss: a restart before a retry succeeds.
+- **Only the Pi writes it.** The web UI sends a request; the Pi validates and saves. One source of truth.
+
+**Set point rules:** night heat (`heat − night_difference`) > `MIN_HEAT + MIN_DEAD_BAND`, so night heat can't drift into em-heat range. `heat + MIN_DEAD_BAND ≤ ac`, `ac ≤ 90`, `night_difference ≥ 0`. A request sends only what changes. Heat alone pushes AC up to `heat + MIN_DEAD_BAND` if it would cross; AC alone pushes heat down. A push out of range rejects the whole request.
+
+**Vacation rules:** end must be after start. Overlapping blocks are kept separate (so each can be edited) and act as one span from earliest start to latest end: away = any block with `start ≤ now < end − 2 h`. Fixed 2 h pre-conditioning lead (`PRECONDITION_LEAD`): a shorter delay saves little, since the house is near target anyway; lengthen it if 2 h proves too short. Blocks are deleted once their return time passes.
+
+**Away temperatures are global**, not per vacation. Only freeze protection matters (summers don't get hot enough). While away, the caller passes `AWAY_POINTS` (heat 62, AC 90, no night shift, `fan_allowed = false`) to `get_HVAC_command` in place of the user's set points. It's a constant, so it skips set point validation (62 isn't above `MIN_HEAT + MIN_DEAD_BAND`). Order still holds: Honeywell backstop < em heat (60) < away heat (62). A bool, not a magic fan threshold, turns the fan off.
+
+**Mode** (decided 2026-11-17): `auto` / `heat` / `cool` / `both`, saved in `hvac_points.json`, set through `PUT /setpoints`. Manual modes stay until set back to `auto`. This is how the user overrides a wrong season, or sets one when the weather API is down. Kept outside `hvac_set_points` so the away swap can't drop it.
+
+**Season lockout (auto mode):** `weather.json` holds a week of hourly forecast, fetched once a day, written only by the program (kept apart from user settings). Season = average daily low over the full days in it (≥ 20 hours, so a fetch starting mid-morning doesn't miss a low): below 55 → heat only; above 65 → cool only; between → both, weather gate decides. The 7-day average and the band in between keep it from flip-flopping, so there's no separate hysteresis. **No expiry:** stale data keeps its season, because AC in winter is the failure that matters. No data at all → heat only (Claude's choice; manual mode overrides).
+
+**Weather gate:** no cooling when the forecast for the current hour is ≥ 5° below the active AC point; no heating when it's ≥ 5° above the active heat point. "Active" is after the night shift. Unknown outside temp → gate skipped (fail open, 10-10). Em heat ignores mode, season and gate.
+
+**Night:** midnight to 8 am (9 pm-midnight is day: user's awake). The whole band drops by `night_difference`, and night sensor weights apply. `is_night_now()` is called in `main` and passed in, so the logic is testable.
 
 ### Web UI ↔ Pi
 

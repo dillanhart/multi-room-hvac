@@ -10,6 +10,8 @@
 #
 # pi/ here is the source of truth: files deleted here are deleted on the Pi.
 # Build output and binaries are excluded, so they are never sent or deleted.
+# So are the saved settings: the Pi's copies are live data (written by the program),
+# and pushing pi/'s example files would overwrite the user's set points and vacations.
 set -euo pipefail
 
 HOST=thermostat@thermostat
@@ -19,6 +21,7 @@ SRC="$ROOT/pi/"
 
 RSYNC=(rsync -az --delete --itemize-changes
        --exclude=/build/ --exclude=/thermostat_control --exclude=/calibrate
+       --exclude=/hvac_points.json --exclude=/vacation.json --exclude=/weather.json --exclude='/*.json.tmp'
        --exclude=.git)
 
 case "${1:-push}" in

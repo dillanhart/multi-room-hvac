@@ -7,6 +7,8 @@
  *   sensor.c   - SCD41 CO2/temperature/humidity sensor
  *   relay.cpp  - Heat/Cool/Fan relays on the GPIO pins
  *   net.cpp    - TCP requests to other devices and the status listener
+ *   data_store.cpp - saved set points, vacations, weather (JSON files)
+ *   weather.cpp - season and outside temp from the stored forecast
  *
  * Build: python3 compile.py
  * Run:   ./thermostat_control   (user must be in the "gpio" group)
@@ -23,6 +25,8 @@
 #include "control.h"
 #include "constants.h"
 #include "validation.h"
+#include "data_store.h"
+#include "weather.h"
 
 /*
  * now_ms - milliseconds since boot.
@@ -47,10 +51,10 @@ int main(void) {
     long long cycle_start = now;  // ms timestamps: long long, int overflows after ~24 days
     long long cycle_end = now;
 
-    // settings: these will change at runtime (display / web UI)
-    float ac_set = 73;
-    float heat_set = 70;
-    [[maybe_unused]] bool away_mode = false;
+    // settings: loaded once here, then changed at runtime (display / web UI)
+    settings_store settings;
+    load_settings(settings);
+    bool away_mode = false;
 
     // Claim the three relay pins as outputs (all relays start off)
     if (relays_init())
@@ -82,7 +86,18 @@ int main(void) {
         sensor_result reading = get_sensor_data();
         update_node(nodes[0], reading, local_sensor_status(reading, nodes[0].health.started_at, now), now);
 
-        hvac_command command = get_HVAC_command(nodes, heat_set, ac_set);
+        // vacations use wall-clock time (Unix seconds), not now_ms()
+        long long now_unix = time(nullptr);
+        remove_finished_vacations(settings, now_unix);
+        away_mode = is_away(settings.vacations, now_unix);
+        // TODO: if (weather_due(settings.weather, now_unix)) fetch, then update_weather()
+        retry_unsaved(settings);
+
+        // away: fixed low heat point, no fan; mode/season and weather gate still apply
+        const hvac_set_points& active = away_mode ? AWAY_POINTS : settings.points;
+        hvac_mode allowed = resolve_mode(settings.mode, season_from_weather(settings.weather));
+        hvac_command command = get_HVAC_command(nodes, active, is_night_now(), allowed,
+                                                outside_temp_at(settings.weather, now_unix));
         hvac_status switch_status = test_switch(sys_status, command, cycle_start, now, cycle_end);
 
         if (sys_status != switch_status &&

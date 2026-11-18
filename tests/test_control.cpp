@@ -294,12 +294,13 @@ TEST_F(FanOnly, RunsPastMaxRun) {
 
 // ---- get_HVAC_command ----
 
-// Every sensor here has weight_day == weight_night, so hour_of_day() (which reads
-// the wall clock) can't change a result. Day/night weighting waits on that fix.
+// Sensors default to weight_day == weight_night; night is passed in, so nothing
+// here reads the clock. Defaults: day, both modes allowed, outside temp unknown.
 class HvacCommand : public ::testing::Test {
 protected:
     const float HEAT_SET = 70;
     const float AC_SET = 73;
+    const hvac_set_points POINTS = {.heat_point = HEAT_SET, .ac_point = AC_SET, .night_difference = 2};
 
     static sensor_node sensor(float temp, bool trusted = true, int weight = 1) {
         sensor_node n = { .name = "s", .weight_day = weight, .weight_night = weight };
@@ -309,8 +310,9 @@ protected:
         return n;
     }
 
-    hvac_command command(const std::vector<sensor_node>& sensors) {
-        return get_HVAC_command(sensors, HEAT_SET, AC_SET);
+    hvac_command command(const std::vector<sensor_node>& sensors, bool night = false,
+                         hvac_mode allowed = hvac_mode::both, std::optional<float> outside = std::nullopt) {
+        return get_HVAC_command(sensors, POINTS, night, allowed, outside);
     }
 };
 
@@ -365,10 +367,94 @@ TEST_F(HvacCommand, UntrustedSensorLeftOutOfSpread) {
 // current behavior: cool is checked first, so it wins over emergency heat.
 // Only reachable with ac_set < MIN_HEAT, which setpoint validation should block.
 TEST_F(HvacCommand, CoolCheckedBeforeEmergencyHeat) {
-    EXPECT_EQ(get_HVAC_command({ sensor(MIN_HEAT - 2) }, 50, MIN_HEAT - 5), hvac_command::cool);
+    hvac_set_points p = {.heat_point = 50, .ac_point = MIN_HEAT - 5, .night_difference = 0};
+    EXPECT_EQ(get_HVAC_command({ sensor(MIN_HEAT - 2) }, p, false, hvac_mode::both, std::nullopt), hvac_command::cool);
 }
 
 // by design: weight 0 means "ignore this sensor", so if it's the only one, there's no data
 TEST_F(HvacCommand, OnlyZeroWeightSensorIsNoData) {
     EXPECT_EQ(command({ sensor(75, true, 0) }), hvac_command::no_data);
 }
+
+// ---- night ----
+
+TEST_F(HvacCommand, NightDropsWholeBand) {
+    // day 70-73; night 68-71
+    EXPECT_EQ(command({ sensor(69) }, false), hvac_command::heat);
+    EXPECT_EQ(command({ sensor(69) }, true), hvac_command::none);
+    EXPECT_EQ(command({ sensor(72) }, false), hvac_command::none);
+    EXPECT_EQ(command({ sensor(72) }, true), hvac_command::cool);
+}
+
+TEST_F(HvacCommand, NightUsesNightWeights) {
+    sensor_node main = sensor(68), bed = sensor(74);
+    main.weight_day = 3; main.weight_night = 1;
+    bed.weight_day = 1;  bed.weight_night = 3;
+    // day (68*3 + 74) / 4 = 69.5 -> heat; night (68 + 74*3) / 4 = 72.5 > night AC 71 -> cool
+    EXPECT_EQ(command({ main, bed }, false), hvac_command::heat);
+    EXPECT_EQ(command({ main, bed }, true), hvac_command::cool);
+}
+
+// ---- mode (manual or from the season) ----
+
+TEST_F(HvacCommand, HeatModeBlocksCooling) {
+    EXPECT_EQ(command({ sensor(75) }, false, hvac_mode::heat), hvac_command::none);
+    EXPECT_EQ(command({ sensor(68) }, false, hvac_mode::heat), hvac_command::heat);
+}
+
+TEST_F(HvacCommand, CoolModeBlocksHeating) {
+    EXPECT_EQ(command({ sensor(68) }, false, hvac_mode::cool), hvac_command::none);
+    EXPECT_EQ(command({ sensor(75) }, false, hvac_mode::cool), hvac_command::cool);
+}
+
+TEST_F(HvacCommand, EmergencyHeatIgnoresMode) {
+    EXPECT_EQ(command({ sensor(MIN_HEAT - 1) }, false, hvac_mode::cool), hvac_command::emergency_heat);
+}
+
+TEST_F(HvacCommand, BlockedCallStillAllowsFan) {
+    // too warm but cooling locked out; spread 3 still circulates
+    EXPECT_EQ(command({ sensor(73), sensor(76) }, false, hvac_mode::heat), hvac_command::fan);
+}
+
+// ---- weather gate ----
+
+TEST_F(HvacCommand, NoCoolingWhenOutsideIsCool) {
+    // AC 73: blocked at outside <= 68
+    EXPECT_EQ(command({ sensor(75) }, false, hvac_mode::both, 68), hvac_command::none);
+    EXPECT_EQ(command({ sensor(75) }, false, hvac_mode::both, 68.5), hvac_command::cool);
+}
+
+TEST_F(HvacCommand, NoHeatingWhenOutsideIsWarm) {
+    // heat 70: blocked at outside >= 75
+    EXPECT_EQ(command({ sensor(68) }, false, hvac_mode::both, 75), hvac_command::none);
+    EXPECT_EQ(command({ sensor(68) }, false, hvac_mode::both, 74.5), hvac_command::heat);
+}
+
+TEST_F(HvacCommand, GateUsesNightPoints) {
+    // night AC 71: blocked at outside <= 66; 67 would be blocked by day (<= 68) but not at night
+    EXPECT_EQ(command({ sensor(75) }, false, hvac_mode::both, 67), hvac_command::none);
+    EXPECT_EQ(command({ sensor(75) }, true, hvac_mode::both, 67), hvac_command::cool);
+}
+
+TEST_F(HvacCommand, UnknownOutsideSkipsGate) {
+    EXPECT_EQ(command({ sensor(75) }, false, hvac_mode::both, std::nullopt), hvac_command::cool);
+}
+
+TEST_F(HvacCommand, EmergencyHeatIgnoresWeather) {
+    EXPECT_EQ(command({ sensor(MIN_HEAT - 1) }, false, hvac_mode::both, 100), hvac_command::emergency_heat);
+}
+
+// ---- away ----
+
+TEST_F(HvacCommand, AwayHeatsOnlyBelow62NoFanNoNightShift) {
+    auto away = [&](std::vector<sensor_node> s, bool night) {
+        return get_HVAC_command(s, AWAY_POINTS, night, hvac_mode::both, std::nullopt);
+    };
+    EXPECT_EQ(away({ sensor(61) }, false), hvac_command::heat);
+    EXPECT_EQ(away({ sensor(61) }, true), hvac_command::heat);
+    EXPECT_EQ(away({ sensor(63) }, false), hvac_command::none);
+    EXPECT_EQ(away({ sensor(85) }, false), hvac_command::none);
+    EXPECT_EQ(away({ sensor(64), sensor(80) }, false), hvac_command::none);   // spread, but no fan
+    EXPECT_EQ(away({ sensor(MIN_HEAT - 1) }, false), hvac_command::emergency_heat);
+}
+

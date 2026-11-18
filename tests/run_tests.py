@@ -21,8 +21,9 @@ BUILD = os.path.join(HERE, "build")
 
 # binary name -> (code under test from pi/, test files and fakes from tests/)
 BINARIES = {
-    "unit_tests": (["control.cpp", "validation.cpp", "net.cpp"],
-                   ["fake_relay.cpp", "test_validation.cpp", "test_control.cpp", "test_net.cpp"]),
+    "unit_tests": (["control.cpp", "validation.cpp", "net.cpp", "data_store.cpp", "weather.cpp"],
+                   ["fake_relay.cpp", "test_validation.cpp", "test_control.cpp", "test_net.cpp",
+                    "test_data_store.cpp", "test_weather.cpp"]),
     "relay_tests": (["relay.cpp"],
                     ["fake_gpiod.cpp", "test_relay.cpp"]),
 }
