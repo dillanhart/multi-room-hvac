@@ -14,7 +14,7 @@ A single wall thermostat only knows the temperature in the hallway. This one is 
 - **Room satellites:** ESP32 boards with their own SCD41s, polled over HTTP/JSON on the local network.
 - **Control:** room readings are combined into a weighted temperature (weights shift between day and night), with hysteresis, minimum on/off times, a heat/cool interlock, and fault detection when heating or cooling isn't changing the temperature.
 - **Fail-safe by hardware:** relays are wired normally-open on GPIOs whose reset state holds them off, so a crash, reboot or power loss drops every call to the furnace. The original thermostat stays wired in parallel on heat as freeze protection.
-- **Display:** 2.4" ILI9341 TFT over SPI, using the mainline `panel-mipi-dbi` DRM driver.
+- **Display:** ST7789V 320x240 TFT over SPI, using the mainline `panel-mipi-dbi` DRM driver, with a resistive touch controller on a second SPI bus.
 
 ## Repository layout
 

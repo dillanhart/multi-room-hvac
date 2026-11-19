@@ -1,4 +1,7 @@
-"""Bench test for the ILI9341 display wiring. See log.md for pin mapping.
+"""OBSOLETE (2026-11-18): for the old ILI9341 module, drives it directly and
+bypasses the kernel driver. The ST7789V is tested through /dev/fb1 instead.
+
+Bench test for the ILI9341 display wiring. See log.md for pin mapping.
 
 Run: source ~/thermostat-venv/bin/activate && python test_display.py
 """

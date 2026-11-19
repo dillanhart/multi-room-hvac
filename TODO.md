@@ -46,9 +46,12 @@ Tests: `python3 tests/run_tests.py`. A failing or `DISABLED_` test is named next
 - Wall clock before NTP sync: no RTC, so right after boot `time()` can be wrong. A clock that runs ahead would delete vacations early (`remove_finished_vacations`). Consider waiting for sync (`timedatectl show -p NTPSynchronized`).
 - Install `nlohmann-json3-dev` on the Pi if a rebuild ever needs it (present in `.sysroot` as of 11-17).
 - Log ring, web apps.
-- Buttons (not yet purchased).
 
-## Display
+## Display and touch
 
-- SPI clock is 8 MHz in `config.txt`, but 32 MHz worked; restore it or find out why 8 is needed.
+- SPI clock is 8 MHz in `config.txt`; the old ILI9341 ran at 32 MHz. Raise it for the ST7789V.
 - Idle blanking unverified with `backlight-gpio` bound.
+- Touch filtering: stray 4095 / low reads at touch-down and lift (TI SBAA036; pressure from X, Z1, Z2).
+- Touch calibration: swap axes for landscape, map raw ~430-3650 to screen pixels. Reverses if the display is flipped 180°.
+- Touch driver: kernel `ads7846` overlay (SPI0 only?) needs a custom SPI1 overlay, or read `/dev/spidev1.0` from the display program.
+- Decide: pushbuttons as a touch fallback, or none (not yet purchased).

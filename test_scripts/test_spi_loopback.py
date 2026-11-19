@@ -1,4 +1,6 @@
-"""SPI0/CE1 loopback sanity check — isolates the Pi's SPI stack from the
+"""OBSOLETE (2026-11-18): touch moved to SPI1; this checks the old SPI0/CE1 path.
+
+SPI0/CE1 loopback sanity check — isolates the Pi's SPI stack from the
 touch chip. Jumper phys 19 (MOSI) directly to phys 21 (MISO) on the
 breadboard before running this; nothing else needs to be connected.
 

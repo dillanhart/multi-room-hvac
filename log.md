@@ -157,7 +157,7 @@ How it was established: every `T_*` wire continuity-checked, 3.3 V at the touch 
 - Wrong turn: VBAT was first read with `0xA0` (differential mode, no such channel), so that 0 meant nothing.
 - **Never share MISO with the display's `SDO`** — it isn't reliably tri-stated. `write-only` stays.
 
-**The Python bench test disabled the production display path.** To expose CE0 as `/dev/spidev0.0`, `dtoverlay=nospi10` and `dtoverlay=mipi-dbi-spi,…` were commented out. The `dtparam=` lines below them then bind to nothing, silently (same failure as 09-23). **Still commented out as of 10-06 — restore both lines and reboot.**
+**The Python bench test disabled the production display path.** To expose CE0 as `/dev/spidev0.0`, `dtoverlay=nospi10` and `dtoverlay=mipi-dbi-spi,…` were commented out. The `dtparam=` lines below them then bind to nothing, silently (same failure as 09-23). ~~**Still commented out as of 10-06 — restore both lines and reboot.**~~ Done 11-18: `mipi-dbi-spi` restored; `nospi10` was already inert (commented, under `[pi5]`).
 
 Bench-only, not part of the build: `test_display.py`, `test_touch.py`, `test_spi_loopback.py`, `~/thermostat-venv` on the Pi.
 
@@ -187,7 +187,7 @@ Bench-only, not part of the build: `test_display.py`, `test_touch.py`, `test_spi
 
 Off-limits: GPIO 14/15 (phys 8/10, UART), GPIO 0/1 (phys 27/28, HAT EEPROM probe).
 
-**Planned regroup:** the four power/ground wires are the only movable ones, and they cross. Swap them so each device's wires sit together: display VCC 1→17, GND 9→20; SCD41 VCC 17→1, GND 20→9 (not 6, which is the relay board's). No `config.txt` change. Not yet recorded as done.
+**Planned regroup:** the four power/ground wires are the only movable ones, and they cross. Swap them so each device's wires sit together: display VCC 1→17, GND 9→20; SCD41 VCC 17→1, GND 20→9 (not 6, which is the relay board's). No `config.txt` change. ~~Not yet recorded as done.~~ Done 11-18, during the rewire for the new display.
 
 ---
 
@@ -547,3 +547,97 @@ Design by the user; code and tests written by Claude. 155 pass (31 new), 0 fail.
 
 - Weather fetch not written (`weather_due()` / `update_weather()` ready). Until then auto = heat only.
 - `SUMMER_AVG_LOW` 65 untested against a real season.
+
+---
+
+## 2026-11-18 (later) — New display module: ST7789V + touch; full rewire; bench re-check
+
+Wiring plan, `config.txt`, init file and bench scripts by Claude; wiring, bring-up and testing by user.
+
+New module: **ST7789V** panel (240x320, run as 320x240 landscape) **with a working touch controller** (answers XPT2046 commands). Replaces the MSP2401 ILI9341. **The 09-22 to 09-24 display notes are specific to that module** and don't carry over: SDO not releasing MISO, the MADCTL table, the LED current, the ILI9341 `panel.bin`.
+
+### Header as wired
+
+| Phys | GPIO | Used by |
+|---|---|---|
+| 1 | 3.3V | SCD41 VCC |
+| 2 | 5V | Relay board VCC |
+| 3 | 2 | SCD41 SDA (I2C1) |
+| 5 | 3 | SCD41 SCL (I2C1) |
+| 6 | GND | Relay board GND |
+| 7 | 4 | Relay W |
+| 9 | GND | SCD41 GND |
+| 12 | 18 | T_CS (SPI1 CE0) |
+| 17 | 3.3V | Display VCC |
+| 18 | 24 | Display DC |
+| 19 | 10 | Display SDI (SPI0 MOSI) |
+| 20 | GND | Display GND |
+| 22 | 25 | Display RESET |
+| 23 | 11 | Display SCK (SPI0 SCLK) |
+| 24 | 8 | Display CS (SPI0 CE0) |
+| 29 | 5 | Relay Y |
+| 31 | 6 | Relay G |
+| 32 | 12 | Display LED (via transistor, active-high) |
+| 35 | 19 | T_DO (SPI1 MISO) |
+| 36 | 16 | T_IRQ (active-low, pull-up in `config.txt`) |
+| 38 | 20 | T_DIN (SPI1 MOSI) |
+| 40 | 21 | T_CLK (SPI1 SCLK) |
+
+- **Touch on its own bus (SPI1).** T_CLK can't share SCK, and a bus has only one SCLK pin. Side effect: display SDO never shares MISO with touch. SDO unconnected; driver stays `write-only`.
+- Power/ground regroup from 09-24 done: each device's wires sit together.
+- Free GPIO: 7, 9, 13, 17, 22, 23, 26, 27 (7 and 9 are claimed by `spi=on`). Off-limits as before: 0/1, 14/15.
+
+### `config.txt` (`[all]`)
+
+```
+gpio=4,5,6=ip,pu
+gpio=16=ip,pu
+
+dtoverlay=mipi-dbi-spi,spi0-0,speed=8000000
+dtparam=width=320,height=240
+dtparam=reset-gpio=25,dc-gpio=24
+dtparam=write-only
+dtparam=backlight-gpio=12
+
+dtoverlay=spi1-1cs
+```
+
+`spi1-1cs` last, so the display's `dtparam=` lines still bind to `mipi-dbi-spi`.
+
+### Display init (`/root/panel-mipi-dbi/st7789v.txt`)
+
+Sequence: software reset, sleep out, `0x3A 0x55` (RGB565), MADCTL, inversion, normal mode, display on. No vendor code; datasheet commands plus power-on defaults.
+
+- **Inversion OFF (`0x20`) is correct for this panel.** Claude assumed INVON (`0x21`), common on ST7789 IPS panels; `0x21` gave every colour as its complement (white→black, red→cyan).
+- **MADCTL `0x60` with `width=320,height=240`: in use** (landscape, right side up). `0xA0` = upside down. Garbled, wrapping text seen along the way had a separate cause, since resolved; not the MADCTL pairing.
+- Inline `# comments` in the init file are fine (`xxd` showed the expected bytes).
+
+### What cost time
+
+- **Results from a file that was never installed.** One `0x20` run was misread because the install state was unclear. Later, a pasted block run from `/root` instead of `/root/panel-mipi-dbi`: the build and copy failed, but the pasted lines after them still ran, **including the reboot**. The screen showed the old file.
+- Fix: `/root/panel-mipi-dbi/install.sh` (`set -e`, `cd`s itself, shows `xxd` of the installed file, asks before rebooting). **Prove the file is applied** with a visible change (MADCTL flip) before trusting any result.
+- The "backup the ILI9341 file" line was in the repeated block, so each rerun overwrote the backup with an ST7789V build. Backup deleted.
+- `test_display.py` is ILI9341-only and bypasses the kernel driver; the wrong tool here. Display checks now write to `/dev/fb1` directly (colour bands; border + diagonal for geometry), reading the size from sysfs.
+
+### Bench re-check — all passed
+
+- **Relays:** `pinctrl get 4-6` = `ip pu | hi` at boot; each channel clicks, LED, COM–NO continuity only while energized.
+- **Supply:** `vcgencmd get_throttled` = `0x0` with all three relays, backlight and SCD41 on.
+- **SCD41:** `0x62` on `i2cdetect`, live readings via `i2ctransfer`; CO2 and RH jump when breathed on.
+- **Touch:** T_IRQ goes `lo` on press; raw reads over `/dev/spidev1.0` at 1 MHz:
+
+| Corner | raw X | raw Y |
+|---|---|---|
+| Top left | ~450 | ~520 |
+| Top right | ~420 | ~3650 |
+| Bottom left | ~3650 | ~430 |
+| Bottom right | ~3550 | ~3500 |
+
+Axes **swapped, not mirrored**: screen left→right = raw Y, top→bottom = raw X (touch layer is portrait-native). Holds for MADCTL `0x60`; a 180° flip reverses both. Stray **4095** and low readings at touch-down/lift: needs filtering (TI SBAA036; pressure from X, Z1, Z2 — Z1 alone ranged 108–1044 for similar presses).
+
+### Open
+
+- Touch filtering + calibration in the display program.
+- Touch driver: kernel `ads7846` overlay targets SPI0 only (to verify), so either a custom overlay or userspace reads on `/dev/spidev1.0`.
+- Pushbuttons: keep as a fallback or drop for touch.
+- Still open from 09-22: SPI clock back to 32 MHz; idle blanking with `backlight-gpio`.

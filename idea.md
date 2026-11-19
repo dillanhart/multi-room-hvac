@@ -26,7 +26,7 @@ Success criteria is intentionally subjective: does my room stay comfortable. Roo
 - **Web UI**, in two separate forms:
   - **Control UI** — reachable only on my Tailscale tailnet. No login, since the tailnet already restricts it to trusted devices. This is where trip/return scheduling lives.
   - **Demo UI** — public, read-only. Shows current temps and explains the system. Portfolio purposes.
-- **Physical controls on the thermostat housing** — raise/lower buttons and a screen showing current and set temp. Serves as backup and as a debugging surface.
+- **Physical controls on the thermostat housing** — a touchscreen showing current and set temp (raise/lower pushbuttons possibly kept as a fallback). Serves as backup and as a debugging surface.
 - **Voice control** — stretch goal, explicitly not in MVP. Mostly for fun, but also a path toward a self-hosted Alexa replacement later.
 
 ## Hardware
@@ -39,9 +39,11 @@ Raspberry Pi 3 as the main thermostat: interfaces with the existing thermostat w
 
 **Temperature sensing.** The Pi carries its own SCD41 (same part as the satellites — see [Satellites](#satellites)). It must sit a short cable-length away from the Pi board rather than mounted against it: the Pi runs measurably warmer than an idle ESP32, and the control scheme depends on a degree-level deadband. A placement constraint for the enclosure, which hasn't been designed yet.
 
-**Display.** ILI9341 TFT, 2.4", 240x320, SPI. Color, so heat/cool/idle state can be color-coded. Driven by the mainline `panel-mipi-dbi` DRM driver (`fbtft` was tried and rejected — see [log.md](log.md), 2026-09-22). Runs as its own program, separate from control (see [Program structure](#program-structure)).
+**Display.** ST7789V TFT, 240x320 (run as 320x240 landscape), SPI0. Color, so heat/cool/idle state can be color-coded. Driven by the mainline `panel-mipi-dbi` DRM driver (`fbtft` was tried and rejected on the earlier ILI9341 module — see [log.md](log.md), 2026-09-22). Runs as its own program, separate from control (see [Program structure](#program-structure)). Replaced the ILI9341 module on 2026-11-18, which had no touch controller fitted.
 
-**Buttons.** Two momentary pushbuttons (raise/lower) on GPIO with internal pull-ups, read by the display program. Not yet purchased. Touch was considered, but the module has no touch controller fitted.
+**Touch.** Resistive, XPT2046-compatible controller on its own bus (SPI1) with a pen-down IRQ on GPIO 16, so touch reads never share a bus with display updates. Raw readings need filtering (stray values at touch-down/lift) and a calibration that swaps the axes for landscape. Kernel driver vs. userspace reads: *open*.
+
+**Buttons.** Two momentary pushbuttons (raise/lower) on GPIO with internal pull-ups, read by the display program. Not yet purchased. *Open:* drop them for touch, or keep them as a fallback if the touchscreen fails.
 
 ### HVAC interface
 
@@ -120,7 +122,7 @@ Weights change by time of day — the bedroom's extra authority midnight–8am i
 
 ### Program structure
 
-**Two programs** (decided 2026-09-30): the control program owns the relays and sensors; the display program owns the screen and pushbuttons and is a client of the same JSON API as the web UI, over `localhost`. A display hang or crash can't stall HVAC control, and every setting change goes through one validation path.
+**Two programs** (decided 2026-09-30): the control program owns the relays and sensors; the display program owns the screen and touch input (and pushbuttons, if kept) and is a client of the same JSON API as the web UI, over `localhost`. A display hang or crash can't stall HVAC control, and every setting change goes through one validation path.
 
 The control program is one single-threaded **event loop**. The loop runs forever, but it never busy-waits: each pass blocks in `poll()` on every input — HTTP sockets and `signalfd` for SIGTERM. `poll()` returns the moment any of them is ready, so input is handled within milliseconds even while the furnace or AC is running.
 
@@ -229,7 +231,7 @@ At minimum: timestamp, per-zone temp/humidity/CO2, current mode (AC/furnace/idle
 
 **Satellites** run a lightweight program that serves their latest reading over HTTP when the Pi asks.
 
-**The Pi** is the central hub: polls the satellites, reads its own sensor, fetches outside weather, drives the HVAC relays and the local display, and accepts commands from the web UI and physical buttons. No Docker — the project is simple and needs direct board IO, so containerizing costs more than it returns.
+**The Pi** is the central hub: polls the satellites, reads its own sensor, fetches outside weather, drives the HVAC relays and the local display, and accepts commands from the web UI and the touchscreen. No Docker — the project is simple and needs direct board IO, so containerizing costs more than it returns.
 
 **Development** happens on the Ubuntu server, not on the Pi (decided 2026-10-02). `pi/` in the project folder mirrors `~/thermostat` on the Pi exactly and is the source of truth; `deploy.sh` rsyncs it over SSH and builds/runs it there. The Pi carries only what it runs — no images, docs or datasheets. A script beat deploying via GitHub: no credentials on the Pi, no commit per test. GitHub ([dillanhart/multi-room-hvac](https://github.com/dillanhart/multi-room-hvac)) is the portfolio record only. IntelliSense checks against a copy of the Pi's headers (`.sysroot/`), so a library missing on the Pi shows as an error on the dev machine, and `./deploy.sh build` compiles on the Pi as the final word.
 
