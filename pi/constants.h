@@ -35,6 +35,15 @@ constexpr float AC_MAX = 90;                       // highest accepted AC set po
 constexpr float FAN_TRIGGER = 2;
 constexpr float FAN_CLEAR = 1;
 
+// CO2 circulation (co2_fan_call): a trusted room over CO2_TRIGGER ppm and over
+// CO2_START_RATIO x the weighted average CO2 starts the fan; it keeps running while
+// a trusted room is over CO2_STOP_RATIO x the average (the gap stops flip-flopping).
+// A room with no trusted reading counts as CO2_FILL_PPM in the average.
+constexpr int CO2_TRIGGER = 1000;
+constexpr float CO2_START_RATIO = 1.2f;
+constexpr float CO2_STOP_RATIO = 1.1f;
+constexpr int CO2_FILL_PPM = 700;
+
 // weather gate: no cooling when outside is this far below the active AC point,
 // no heating when it's this far above the active heat point (em heat never gated)
 constexpr float WEATHER_GATE_MARGIN = 5;

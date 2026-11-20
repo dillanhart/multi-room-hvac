@@ -48,8 +48,8 @@ int main(void) {
 
     // [[maybe_unused]]: not wired in yet; remove the tag once each is used
     [[maybe_unused]] int sensor_fails = 0;
-    long long cycle_start = now;  // ms timestamps: long long, int overflows after ~24 days
-    long long cycle_end = now;
+    // status, fan setting and cycle timers (ms timestamps: long long, int overflows after ~24 days)
+    control_state state = initial_control_state(now);
 
     // settings: loaded once here, then changed at runtime (display / web UI)
     settings_store settings;
@@ -61,7 +61,6 @@ int main(void) {
         return 1;
 
     int start_status = scd41_start();
-    hvac_status sys_status = hvac_status::idle;
 
 
     // Setup three sensor data
@@ -93,18 +92,13 @@ int main(void) {
         // TODO: if (weather_due(settings.weather, now_unix)) fetch, then update_weather()
         retry_unsaved(settings);
 
-        // away: fixed low heat point, no fan; mode/season and weather gate still apply
+        // away: fixed low heat point, no fan (manual fan-on is kept, just held off);
+        // mode/season and weather gate still apply
         const hvac_set_points& active = away_mode ? AWAY_POINTS : settings.points;
         hvac_mode allowed = resolve_mode(settings.mode, season_from_weather(settings.weather));
-        hvac_command command = get_HVAC_command(nodes, active, is_night_now(), allowed,
-                                                outside_temp_at(settings.weather, now_unix));
-        hvac_status switch_status = test_switch(sys_status, command, cycle_start, now, cycle_end);
-
-        if (sys_status != switch_status &&
-            apply_status(sys_status, switch_status, now, cycle_start, cycle_end) == 0){
-            sys_status = switch_status;
-        }
-        sleep(10);
+        control_step(state, nodes, active, is_night_now(), allowed,
+                     outside_temp_at(settings.weather, now_unix), now);
+        sleep(60);
     }
     return 0;
 }

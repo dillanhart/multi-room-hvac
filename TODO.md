@@ -34,7 +34,7 @@ Tests: `python3 tests/run_tests.py`. A failing or `DISABLED_` test is named next
 
 ## Design, still open
 
-- Fan: `circulating` as a status in the HVAC state machine vs. a separate fan control alongside it. Zone-spread fan logic not settled; `FAN_CLEAR` hysteresis unused.
+- Zone-spread fan logic not settled; `FAN_CLEAR` hysteresis unused. (Fan-as-status settled 11-19: manual on/auto + CO2 rule.)
 - HTTP server library (Mongoose vs libmicrohttpd).
 
 ## Features

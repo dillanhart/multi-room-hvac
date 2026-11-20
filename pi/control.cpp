@@ -33,12 +33,52 @@ static std::optional<float> calculate_weighted_temperature(const std::vector<sen
 }
 
 
+control_state initial_control_state(long long now) {
+    control_state state;
+    state.cycle_start = now;
+    state.cycle_end = now;
+    return state;
+}
+
+
+bool co2_fan_call(const std::vector<sensor_node>& sensors, bool is_night, bool running) {
+    // weighted average; a room without a trusted reading counts as a typical room
+    float total = 0.0f;
+    float total_weight = 0.0f;
+    bool any_trusted = false;
+    for (const auto& node : sensors) {
+        int weight = node.weight_day;
+        float ppm = node.health.trusted ? node.data.CO2 : CO2_FILL_PPM;
+        total += ppm * weight;
+        total_weight += weight;
+        any_trusted = any_trusted || node.health.trusted;
+    }
+    if (!any_trusted || total_weight == 0) return false;
+    float average = total / total_weight;
+
+    // only a real (trusted) reading can start or hold the fan
+    for (const auto& node : sensors) {
+        if (!node.health.trusted) continue;
+        float ppm = node.data.CO2;
+        bool wants_fan = running ? ppm > CO2_STOP_RATIO * average
+                                 : ppm > CO2_TRIGGER && ppm > CO2_START_RATIO * average;
+        if (wants_fan) return true;
+    }
+    return false;
+}
+
+
 hvac_command get_HVAC_command(const std::vector<sensor_node>& sensors, const hvac_set_points& points,
-                              bool is_night, hvac_mode allowed, std::optional<float> outside_temp) {
+                              bool is_night, hvac_mode allowed, std::optional<float> outside_temp,
+                              fan_mode fan, bool co2_fan) {
+
+    // manual fan and the CO2 rule; away (fan_allowed = false) holds both off
+    bool fan_wanted = points.fan_allowed && (fan == fan_mode::on || co2_fan);
 
     // 1. Get the aggregated data; no valid sensors means no decision
     std::optional<float> weighted = calculate_weighted_temperature(sensors, is_night);
-    if (!weighted) return hvac_command::no_data;
+    // the manual fan doesn't need temperatures, so it outranks no_data
+    if (!weighted) return fan_wanted ? hvac_command::fan : hvac_command::no_data;
     float weighted_temp = *weighted;
 
     // 2. Extract raw temps for the "Fan" check
@@ -59,10 +99,11 @@ hvac_command get_HVAC_command(const std::vector<sensor_node>& sensors, const hva
                    !(outside_temp && *outside_temp >= heat_set + WEATHER_GATE_MARGIN);
 
     // 5. Decision Logic (em heat is never gated)
-    if (weighted_temp > ac_set && cool_ok) return hvac_command::cool;
     if (weighted_temp < MIN_HEAT) return hvac_command::emergency_heat;
+    if (weighted_temp > ac_set && cool_ok) return hvac_command::cool;
     if (weighted_temp < heat_set && heat_ok) return hvac_command::heat;
 
+    if (fan_wanted) return hvac_command::fan;
     if (points.fan_allowed && !raw_temps.empty()) {
         auto [min_it, max_it] = std::minmax_element(raw_temps.begin(), raw_temps.end());
         if (*max_it - *min_it > FAN_TRIGGER) return hvac_command::fan;
@@ -102,39 +143,50 @@ static hvac_status status_for(hvac_command command) {
     return hvac_status::idle;  // unreachable; satisfies -Wreturn-type
 }
 
+// Rules, in order:
+// - em heat starts at once from anything: no min-on, min-off or max-run.
+// - heat/cool stop at MAX_RUN_TIME, to circulating if the fan is called, else idle.
+//   (em_heating -> heating keeps cycle_start, so that heating counts from the em heat start)
+// - idle -> circulating at once (fan skips min-off); idle -> heat/cool waits out min-off.
+// - circulating runs at least MIN_ON_TIME (only em heat cuts it short); then heat/cool
+//   still wait out min-off.
+// - heat/cool/em heat finish min-on, then go where the command says: idle, or
+//   circulating when the fan is called (a fan call never cuts a run short).
+// - a heat <-> cool call stops the running side at once (skips min-on); the other side
+//   then waits out min-off from idle.
 hvac_status test_switch (hvac_status sys_status, hvac_command command, long long cycle_start, long long now_ms, long long cycle_end){
-    hvac_status requested_status = status_for(command);
-    hvac_status return_status;
-    
-    // for emergency heating and circulating fan bypass min_off_time and max_run_time
-    if (command == hvac_command::emergency_heat || command == hvac_command::fan){
-        return_status = requested_status;
+    hvac_status requested = status_for(command);
 
-    // if the system is turning on has it been enough time since it turned off to switch
-    } else if (sys_status == hvac_status::idle){
-        if (now_ms > cycle_end + MIN_OFF_TIME || requested_status == hvac_status::circulating){
-            return_status = requested_status;
-        }
-        else {return_status = sys_status;}
-        }
-    else {
-        // if it is currently in an active situation (heating, cooling) then has it been running for long enough to turn off
-        if(!conflicting(sys_status, requested_status)){
-            return_status = sys_status;
-            // circulating -> furnace/AC restarts the equipment, so it waits out MIN_OFF_TIME like idle does
-            bool restart_blocked = equipment_for(sys_status) == equipment::none &&
-                                   equipment_for(requested_status) != equipment::none &&
-                                   now_ms <= cycle_end + MIN_OFF_TIME;
-            if (now_ms > cycle_start + MIN_ON_TIME && !restart_blocked){
-                return_status = requested_status;
-                // if it has been running for too long, nevermind turn it off.
-                if (now_ms > cycle_start + MAX_RUN_TIME){
-                    return_status = hvac_status::idle;
-                }
-            }
-        }else {return_status = hvac_status::idle;}
+    if (requested == hvac_status::em_heating) return hvac_status::em_heating;
+
+    bool min_on_done = now_ms > cycle_start + MIN_ON_TIME;
+    bool min_off_done = now_ms > cycle_end + MIN_OFF_TIME;
+    bool wants_equipment = equipment_for(requested) != equipment::none;
+
+    bool capped = sys_status == hvac_status::heating || sys_status == hvac_status::cooling;
+    if (capped && now_ms > cycle_start + MAX_RUN_TIME)
+        return requested == hvac_status::circulating ? hvac_status::circulating : hvac_status::idle;
+
+    if (requested == sys_status) return sys_status;
+
+    switch (sys_status) {
+        case hvac_status::idle:
+            if (requested == hvac_status::circulating || min_off_done) return requested;
+            return hvac_status::idle;
+
+        case hvac_status::circulating:
+            if (!min_on_done) return hvac_status::circulating;
+            if (wants_equipment && !min_off_done) return hvac_status::circulating;
+            return requested;
+
+        case hvac_status::heating:
+        case hvac_status::em_heating:
+        case hvac_status::cooling:
+            if (conflicting(sys_status, requested)) return hvac_status::idle;
+            if (!min_on_done) return sys_status;
+            return requested;
     }
-    return return_status;
+    return sys_status;  // unreachable; satisfies -Wreturn-type
 }
 
 // switch the relays to match new_status; only if that worked, stamp the cycle timers
@@ -147,13 +199,17 @@ int apply_status(hvac_status old_status, hvac_status new_status, long long now, 
     switch (new_status){
         case hvac_status::idle:        relay_success = all_off(); break;
         case hvac_status::cooling:
-            // fan may still be on from circulating; drop it first
-            relay_success = relay_set(RELAY_FAN, 0);
+            // fan may still be on from circulating; drop it (and heat, defensively) first
+            relay_success = relay_set(RELAY_HEAT, 0);
+            if (relay_success == 0) relay_success = relay_set(RELAY_FAN, 0);
             if (relay_success == 0) relay_success = relay_set(RELAY_COOL, 1);
             break;
         case hvac_status::em_heating:
         case hvac_status::heating:
-            relay_success = relay_set(RELAY_FAN, 0);
+            // cool can still be on when em heat takes over from cooling: without
+            // this the heat relay is refused (RELAY_INTERLOCK) on every pass
+            relay_success = relay_set(RELAY_COOL, 0);
+            if (relay_success == 0) relay_success = relay_set(RELAY_FAN, 0);
             if (relay_success == 0) relay_success = relay_set(RELAY_HEAT, 1);
             break;
         case hvac_status::circulating:
@@ -171,4 +227,21 @@ int apply_status(hvac_status old_status, hvac_status new_status, long long now, 
         !(old_status == hvac_status::em_heating && new_status == hvac_status::heating))
         cycle_start = now;
     return 0;
+}
+
+hvac_command control_step(control_state& state, const std::vector<sensor_node>& sensors,
+                          const hvac_set_points& points, bool is_night, hvac_mode allowed,
+                          std::optional<float> outside_temp, long long now) {
+    // away clears the CO2 memory, so a return home starts from the start line, not the stop line
+    state.co2_circulating = points.fan_allowed &&
+                            co2_fan_call(sensors, is_night, state.co2_circulating);
+
+    hvac_command command = get_HVAC_command(sensors, points, is_night, allowed, outside_temp,
+                                            state.fan, state.co2_circulating);
+    hvac_status next = test_switch(state.status, command, state.cycle_start, now, state.cycle_end);
+
+    if (next != state.status &&
+        apply_status(state.status, next, now, state.cycle_start, state.cycle_end) == 0)
+        state.status = next;
+    return command;
 }

@@ -153,9 +153,9 @@ The real risk is the AC and furnace fighting each other — AC overshoots cold, 
 - **The relays follow a state, not the command.** The temperature logic produces a request (`hvac_command`); `test_switch` turns current state + request + timers into the next state (`hvac_status`); relays change only when the state changes. Request and state are separate types: `no_data` is a request with no matching state, and a future fault/lockout state would be a state nothing requests.
 - **Timestamps change only on transitions.** idle → heat/cool/em_heat sets `cycle_start`; heat/cool/em_heat → idle/circulating sets `cycle_end`. Updating them every tick instead (the first attempt) meant the lockout never expired. `cycle_end` starts at boot time, so a power blip mid-cycle still gets a full min-off before restarting.
 - **Heat ↔ cool always goes through idle**, so min-off applies before the other system starts. It skips min-on: a switch within minutes means something is wrong, and stopping beats continuing to heat. Rare in practice, since the temperature has to cross the whole deadband.
-- **Emergency heat** (below `MIN_HEAT`, 60 °F) bypasses min-off. Max-run still applies. *Open:* as written it restarts one tick after max-run stops it; it needs a fault state that stays off, or a progress check (`PROGRESS_WINDOW`: 1 °F within 20 min) that catches a dead furnace or stuck sensor sooner.
+- **Emergency heat** (below `MIN_HEAT`, 60 °F) starts at once from any status (skips min-on, min-off, mode, season, gate) and has no max-run: it runs as long as it's called for. Only the furnace's own high-limit and the sensor checks guard a sensor stuck low.
 - **No sensor data** = request idle: a running cycle finishes its min-on, then stops; idle stays idle.
-- **Fan:** *open* — whether circulating follows the furnace/AC timers or has its own.
+- **Fan** (decided 2026-11-19): `circulating` is a status. It skips min-off, always runs at least min-on (only em heat cuts in), and has no max-run. A fan call never cuts heat/cool short: they finish min-on, then go to circulating instead of idle. Calls come from manual fan-on (RAM only, held off while away), the zone temperature spread, and CO2: a room > 1000 ppm and > 1.2 × weighted average starts it, ≤ 1.1 × stops it; rooms without a trusted reading count as 700 ppm.
 
 ### Failure handling
 

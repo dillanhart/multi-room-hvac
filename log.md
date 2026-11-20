@@ -641,3 +641,19 @@ Axes **swapped, not mirrored**: screen left→right = raw Y, top→bottom = raw 
 - Touch driver: kernel `ads7846` overlay targets SPI0 only (to verify), so either a custom overlay or userspace reads on `/dev/spidev1.0`.
 - Pushbuttons: keep as a fallback or drop for touch.
 - Still open from 09-22: SPI clock back to 32 MHz; idle blanking with `backlight-gpio`.
+
+## 2026-11-19 — State machine: manual fan, CO2 circulation (rewrite pass 1 of 2)
+
+Design by the user; code and tests written by Claude. 169 pass (25 new), 0 fail.
+
+- Fan question from 10-08 settled (user): fan stays a `circulating` status, not a separate control. Manual `fan_mode` on/auto (RAM only) is an input: fan-on circulates whenever heat/cool/em heat isn't called, even with no sensor data; away holds it off without clearing it.
+- **A fan call no longer cuts heat/cool short.** Replaces `FanSkipsMinOn`: heat/cool finish min-on, then go to circulating instead of idle. Circulating always runs 5 min; only em heat cuts in.
+- CO2 rule (user): a trusted room > 1000 ppm and > 1.2 × weighted average CO2 starts the fan; it runs until every trusted room ≤ 1.1 × average. Rooms with no trusted reading count as 700 ppm, so a lone sensor can still trigger.
+- `control_state` (status, fan, CO2 memory, timers) + `control_step()` replace the loose variables in `main`, so a whole pass is testable.
+- Bug found while rewriting: circulating longer than max-run, then a heat call, went to idle for one pass (heat's max-run was checked against the fan's `cycle_start`). Max-run now applies to heating/cooling only.
+- Claude's choices, not discussed: max-run with the fan called goes straight to circulating; heating/cooling also turn the *other* relay off first (cooling → em heat was refused by the interlock every pass); away clears the CO2 memory; only trusted rooms can trigger CO2.
+
+### Open
+
+- Pass 2: threads + cpp-httplib API, history ring, weather fetch thread, main loop.
+- CO2 thresholds depend on SCD41 calibration (ASC off, no forced recalibration yet).
