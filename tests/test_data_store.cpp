@@ -8,8 +8,8 @@
 
 namespace fs = std::filesystem;
 
-// Each test gets its own empty temp dir for the two files, and a fixed time zone
-// (US Central) so US-time parsing doesn't depend on the machine.
+// Each test gets its own empty temp dir for the files, and a fixed time zone
+// (US Central) so nothing depends on the machine's.
 class DataStore : public ::testing::Test {
 protected:
     fs::path dir;
@@ -40,7 +40,9 @@ protected:
         std::ifstream f(path);
         return {std::istreambuf_iterator<char>(f), {}};
     }
-    long long t(const std::string& us) { return *parse_us_time(us); }
+    // vacation times are plain Unix seconds; any values work
+    static constexpr long long T0 = 1'800'000'000;
+    static constexpr long long DAY = 24 * 3600;
 
     // a store with two set points, as if set through the API
     void set_points(float heat, float ac, float night = 2) { store.points = {heat, ac, night}; }
@@ -198,7 +200,6 @@ TEST_F(DataStore, FailedWriteKeepsNewValuesAndRetries) {
     EXPECT_EQ(update_set_points(store, {{"heat_point", 68}}), request_result::not_saved_yet);
     EXPECT_EQ(store.points.heat_point, 68);   // in use anyway
     EXPECT_TRUE(store.points_unsaved);
-    EXPECT_FALSE(settings_json(store, 0)["all_saved"]);
 
     retry_unsaved(store);                     // still failing: still unsaved
     EXPECT_TRUE(store.points_unsaved);
@@ -208,7 +209,6 @@ TEST_F(DataStore, FailedWriteKeepsNewValuesAndRetries) {
     fs::create_directory(dir / "missing_dir");
     retry_unsaved(store);
     EXPECT_FALSE(store.points_unsaved);
-    EXPECT_TRUE(settings_json(store, 0)["all_saved"]);
 
     settings_store restarted;
     restarted.hvac_path = store.hvac_path;
@@ -217,58 +217,35 @@ TEST_F(DataStore, FailedWriteKeepsNewValuesAndRetries) {
     EXPECT_EQ(restarted.points.heat_point, 66);
 }
 
-// ---- US time ----
-
-TEST_F(DataStore, UsTimeRoundTrip) {
-    std::optional<long long> t = parse_us_time("12/25/2026 13:00");
-    ASSERT_TRUE(t);
-    EXPECT_EQ(*t, 1798225200);   // 19:00 UTC, Central is UTC-6 in December
-    EXPECT_EQ(format_us_time(*t), "12/25/2026 13:00");
-    EXPECT_EQ(format_us_time(*parse_us_time("07/04/2026 08:05")), "07/04/2026 08:05");   // DST
-}
-
-TEST_F(DataStore, UsTimeRejectsBadInput) {
-    for (const char* text : {
-             "12/25/2026",              // no time
-             "12/25/2026 13:00 extra",  // trailing junk
-             "13/01/2026 10:00",        // month 13 (and EU order)
-             "25/12/2026 13:00",        // EU order
-             "02/30/2026 10:00",        // no Feb 30
-             "12/25/2026 24:00",
-             "03/08/2026 02:30",        // skipped by spring-forward
-             "",
-         }) {
-        EXPECT_FALSE(parse_us_time(text)) << text;
-    }
-}
-
 // ---- vacations: requests ----
 
+json vacation(long long start, long long end) {
+    return {{"vacation_start", start}, {"vacation_end", end}};
+}
+
 TEST_F(DataStore, AddAssignsIncreasingIds) {
-    EXPECT_EQ(add_vacation(store, {{"vacation_start", "12/20/2026 08:00"}, {"vacation_end", "12/27/2026 13:00"}}),
-              request_result::saved);
-    EXPECT_EQ(add_vacation(store, {{"vacation_start", "01/10/2027 08:00"}, {"vacation_end", "01/12/2027 18:00"}}),
-              request_result::saved);
+    EXPECT_EQ(add_vacation(store, vacation(T0, T0 + 7 * DAY)), request_result::saved);
+    EXPECT_EQ(add_vacation(store, vacation(T0 + 20 * DAY, T0 + 22 * DAY)), request_result::saved);
     ASSERT_EQ(store.vacations.blocks.size(), 2u);
     EXPECT_EQ(store.vacations.blocks[0].block_id, 0);
     EXPECT_EQ(store.vacations.blocks[1].block_id, 1);
-    EXPECT_EQ(store.vacations.blocks[0].vacation_end, t("12/27/2026 13:00"));
+    EXPECT_EQ(store.vacations.blocks[0].vacation_end, T0 + 7 * DAY);
     EXPECT_EQ(store.vacations.next_id, 2);
 
     // ids aren't reused after a removal
     EXPECT_EQ(remove_vacation(store, 1), request_result::saved);
-    add_vacation(store, {{"vacation_start", "02/01/2027 08:00"}, {"vacation_end", "02/02/2027 08:00"}});
+    add_vacation(store, vacation(T0 + 40 * DAY, T0 + 41 * DAY));
     EXPECT_EQ(store.vacations.blocks.back().block_id, 2);
 }
 
 TEST_F(DataStore, AddRejectsBadVacations) {
     for (const json& request : {
-             json{{"vacation_start", "12/27/2026 13:00"}, {"vacation_end", "12/20/2026 08:00"}},  // end first
-             json{{"vacation_start", "12/20/2026 08:00"}, {"vacation_end", "12/20/2026 08:00"}},  // zero length
-             json{{"vacation_start", "12/20/2026 08:00"}},                                         // no end
-             json{{"vacation_start", "12/20/2026"}, {"vacation_end", "12/27/2026 13:00"}},        // bad date
-             json{{"vacation_start", 1798000000}, {"vacation_end", 1798500000}},                  // Unix, not text
-             json{{"vacation_start", "12/20/2026 08:00"}, {"vacation_end", "12/27/2026 13:00"}, {"block_id", 5}},
+             vacation(T0 + 7 * DAY, T0),                                    // end first
+             vacation(T0, T0),                                              // zero length
+             json{{"vacation_start", T0}},                                  // no end
+             json{{"vacation_start", "12/20/2026 08:00"}, {"vacation_end", T0}},  // text, not Unix
+             json{{"vacation_start", 1.5}, {"vacation_end", T0}},           // not a whole number
+             json{{"vacation_start", T0}, {"vacation_end", T0 + DAY}, {"block_id", 5}},
          }) {
         EXPECT_EQ(add_vacation(store, request), request_result::rejected) << request;
     }
@@ -277,31 +254,30 @@ TEST_F(DataStore, AddRejectsBadVacations) {
 }
 
 TEST_F(DataStore, ChangeOneTime) {
-    add_vacation(store, {{"vacation_start", "12/20/2026 08:00"}, {"vacation_end", "12/27/2026 13:00"}});
-    EXPECT_EQ(change_vacation(store, {{"block_id", 0}, {"vacation_end", "12/28/2026 09:00"}}), request_result::saved);
-    EXPECT_EQ(store.vacations.blocks[0].vacation_start, t("12/20/2026 08:00"));
-    EXPECT_EQ(store.vacations.blocks[0].vacation_end, t("12/28/2026 09:00"));
+    add_vacation(store, vacation(T0, T0 + 7 * DAY));
+    EXPECT_EQ(change_vacation(store, 0, {{"vacation_end", T0 + 8 * DAY}}), request_result::saved);
+    EXPECT_EQ(store.vacations.blocks[0].vacation_start, T0);
+    EXPECT_EQ(store.vacations.blocks[0].vacation_end, T0 + 8 * DAY);
 }
 
 TEST_F(DataStore, ChangeRejects) {
-    add_vacation(store, {{"vacation_start", "12/20/2026 08:00"}, {"vacation_end", "12/27/2026 13:00"}});
-    long long end = store.vacations.blocks[0].vacation_end;
-    EXPECT_EQ(change_vacation(store, {{"block_id", 9}, {"vacation_end", "12/28/2026 09:00"}}), request_result::rejected);
-    EXPECT_EQ(change_vacation(store, {{"block_id", 0}, {"vacation_end", "12/19/2026 09:00"}}), request_result::rejected);
-    EXPECT_EQ(change_vacation(store, {{"block_id", 0}}), request_result::rejected);
-    EXPECT_EQ(change_vacation(store, {{"vacation_end", "12/28/2026 09:00"}}), request_result::rejected);
-    EXPECT_EQ(store.vacations.blocks[0].vacation_end, end);
+    add_vacation(store, vacation(T0, T0 + 7 * DAY));
+    EXPECT_EQ(change_vacation(store, 9, {{"vacation_end", T0 + 8 * DAY}}), request_result::not_found);
+    EXPECT_EQ(change_vacation(store, 0, {{"vacation_end", T0 - DAY}}), request_result::rejected);
+    EXPECT_EQ(change_vacation(store, 0, json::object()), request_result::rejected);   // nothing to change
+    EXPECT_EQ(change_vacation(store, 0, {{"block_id", 1}}), request_result::rejected);
+    EXPECT_EQ(store.vacations.blocks[0].vacation_end, T0 + 7 * DAY);
 }
 
-TEST_F(DataStore, RemoveUnknownIdRejected) {
-    EXPECT_EQ(remove_vacation(store, 0), request_result::rejected);
+TEST_F(DataStore, RemoveUnknownIdNotFound) {
+    EXPECT_EQ(remove_vacation(store, 0), request_result::not_found);
 }
 
 // ---- vacations: file ----
 
 TEST_F(DataStore, VacationsReloadAfterRestart) {
-    add_vacation(store, {{"vacation_start", "12/20/2026 08:00"}, {"vacation_end", "12/27/2026 13:00"}});
-    add_vacation(store, {{"vacation_start", "01/10/2027 08:00"}, {"vacation_end", "01/12/2027 18:00"}});
+    add_vacation(store, vacation(T0, T0 + 7 * DAY));
+    add_vacation(store, vacation(T0 + 20 * DAY, T0 + 22 * DAY));
 
     settings_store restarted;
     restarted.hvac_path = store.hvac_path;
@@ -309,7 +285,7 @@ TEST_F(DataStore, VacationsReloadAfterRestart) {
     load_settings(restarted);
     ASSERT_EQ(restarted.vacations.blocks.size(), 2u);
     EXPECT_EQ(restarted.vacations.blocks[1].block_id, 1);
-    EXPECT_EQ(restarted.vacations.blocks[1].vacation_start, t("01/10/2027 08:00"));
+    EXPECT_EQ(restarted.vacations.blocks[1].vacation_start, T0 + 20 * DAY);
     EXPECT_EQ(restarted.vacations.next_id, 2);
 }
 
@@ -429,8 +405,8 @@ static std::vector<hourly_temp> hours(long long start, int count, float temp) {
 }
 
 TEST_F(DataStore, WeatherSavedTrimmedAndReloaded) {
-    long long now = t("11/17/2026 06:30");
-    long long hour = t("11/17/2026 06:00");
+    long long hour = 1'795'000'000 / 3600 * 3600;   // on the hour
+    long long now = hour + 30 * 60;
     // 10 days from 2 hours ago, given out of order
     std::vector<hourly_temp> fetched = hours(hour - 2 * 3600, 240, 40);
     std::reverse(fetched.begin(), fetched.end());
@@ -475,13 +451,13 @@ TEST_F(DataStore, WeatherWriteRetried) {
     EXPECT_EQ(restart().weather.hourly.size(), 24u);
 }
 
-TEST_F(DataStore, SettingsJsonShowsActiveModeAndOutside) {
-    long long day = t("01/05/2027 00:00");
-    update_weather(store, hours(day, 7 * 24, 30), day);   // cold week: winter
-    json j = settings_json(store, day + 90 * 60);
-    EXPECT_EQ(j["set_points"]["mode"], "auto");
-    EXPECT_EQ(j["active_mode"], "heat");
-    EXPECT_EQ(j["outside_temp"], 30);
-    EXPECT_TRUE(settings_json(store, day - 3600)["outside_temp"].is_null());
-}
+TEST_F(DataStore, ApiJson) {
+    set_points(70, 73, 2);
+    store.mode = hvac_mode::cool;
+    EXPECT_EQ(set_points_json(store),
+              (json{{"heat_point", 70}, {"ac_point", 73}, {"night_difference", 2}, {"mode", "cool"}}));
 
+    add_vacation(store, vacation(T0, T0 + DAY));
+    EXPECT_EQ(vacations_json(store),
+              (json{{"blocks", {{{"block_id", 0}, {"vacation_start", T0}, {"vacation_end", T0 + DAY}}}}}));
+}

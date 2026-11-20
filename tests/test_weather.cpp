@@ -93,9 +93,83 @@ TEST(OutsideTemp, HourContainingNow) {
     EXPECT_FALSE(outside_temp_at(w, 10800));   // past the data: gate skipped
 }
 
-TEST(WeatherDue, OncePerDay) {
-    EXPECT_TRUE(weather_due({}, 1'000'000));   // never fetched
-    weather_data w{.fetched_at = 1'000'000, .hourly = {}};
-    EXPECT_FALSE(weather_due(w, 1'000'000 + WEATHER_REFRESH - 1));
-    EXPECT_TRUE(weather_due(w, 1'000'000 + WEATHER_REFRESH));
+// ---- fetch schedule: hourly tries, midnight to 8 am, until one works ----
+
+TEST_F(Weather, NeverFetchedTriesAtAnyHour) {
+    EXPECT_TRUE(weather_fetch_due({}, midnight(5) + 14 * 3600, 0));
+}
+
+TEST_F(Weather, TriesAnHourApart) {
+    long long now = midnight(5) + 3 * 3600;
+    weather_data yesterday{.fetched_at = midnight(4) + 3600, .hourly = {}};
+    EXPECT_FALSE(weather_fetch_due(yesterday, now, now - WEATHER_RETRY + 1));
+    EXPECT_TRUE(weather_fetch_due(yesterday, now, now - WEATHER_RETRY));
+}
+
+TEST_F(Weather, OnlyBetweenMidnightAndEight) {
+    weather_data yesterday{.fetched_at = midnight(4) + 3600, .hourly = {}};
+    EXPECT_TRUE(weather_fetch_due(yesterday, midnight(5), 0));
+    EXPECT_TRUE(weather_fetch_due(yesterday, midnight(5) + 8 * 3600 - 1, 0));
+    EXPECT_FALSE(weather_fetch_due(yesterday, midnight(5) + 8 * 3600, 0));
+    EXPECT_FALSE(weather_fetch_due(yesterday, midnight(5) - 1, 0));   // 11:59 pm
+}
+
+TEST_F(Weather, SuccessEndsTonightsTries) {
+    weather_data today{.fetched_at = midnight(5) + 3600, .hourly = {}};
+    EXPECT_FALSE(weather_fetch_due(today, midnight(5) + 4 * 3600, 0));
+    EXPECT_TRUE(weather_fetch_due(today, midnight(6) + 3600, 0));     // next night
+}
+
+// a fetch as late as 7 am still makes today a full day (17 hours >= FULL_DAY_HOURS),
+// even though the 5 am low is missing: 30 + 15 = 45 is the lowest hour left
+TEST_F(Weather, SevenAmFetchCountsToday) {
+    EXPECT_EQ(season_from_weather(week({30}, 7)), season::winter);
+    EXPECT_EQ(season_from_weather(week({30}, 9)), season::unknown);   // 15 hours: left out
+}
+
+// ---- NWS reply ----
+
+TEST_F(Weather, Iso8601WithOffset) {
+    EXPECT_EQ(parse_iso8601("2027-01-05T14:00:00-06:00"), midnight(5) + 14 * 3600);   // Central, January
+    EXPECT_EQ(parse_iso8601("1970-01-01T00:00:00+00:00"), 0);
+    EXPECT_EQ(parse_iso8601("1970-01-01T01:30:00+01:30"), 0);
+    for (const char* bad : {"2027-01-05T14:00:00", "2027-01-05T14:00:00Z", "2027-01-05 14:00:00-06:00",
+                            "2027-01-05T14:00:00-06:00 junk", "", "soon"})
+        EXPECT_FALSE(parse_iso8601(bad)) << bad;
+}
+
+TEST(NwsHourly, ReadsPeriods) {
+    std::string body = R"({"properties": {"periods": [
+        {"number": 1, "startTime": "1970-01-01T00:00:00+00:00", "temperature": 41, "temperatureUnit": "F"},
+        {"number": 2, "startTime": "1970-01-01T01:00:00+00:00", "temperature": 5, "temperatureUnit": "C"},
+        {"number": 3, "startTime": "1970-01-01T02:00:00+00:00",
+         "temperature": {"value": 10, "unitCode": "wmoUnit:degC"}}
+    ]}})";
+    std::optional<std::vector<hourly_temp>> hours = parse_nws_hourly(body);
+    ASSERT_TRUE(hours);
+    ASSERT_EQ(hours->size(), 3u);
+    EXPECT_EQ((*hours)[0].time, 0);
+    EXPECT_FLOAT_EQ((*hours)[0].temp, 41);
+    EXPECT_FLOAT_EQ((*hours)[1].temp, 41);   // 5 C
+    EXPECT_EQ((*hours)[2].time, 7200);
+    EXPECT_FLOAT_EQ((*hours)[2].temp, 50);   // 10 C
+}
+
+TEST(NwsHourly, SkipsBadPeriodsKeepsGoodOnes) {
+    std::string body = R"({"properties": {"periods": [
+        {"startTime": "not a time", "temperature": 41},
+        {"startTime": "1970-01-01T01:00:00+00:00", "temperature": null},
+        {"startTime": "1970-01-01T02:00:00+00:00", "temperature": 39, "temperatureUnit": "F"}
+    ]}})";
+    std::optional<std::vector<hourly_temp>> hours = parse_nws_hourly(body);
+    ASSERT_TRUE(hours);
+    ASSERT_EQ(hours->size(), 1u);
+    EXPECT_EQ((*hours)[0].time, 7200);
+}
+
+TEST(NwsHourly, NotAForecast) {
+    for (const char* body : {"", "<html>busy</html>", "{}", R"({"properties": {}})",
+                             R"({"properties": {"periods": []}})", R"({"properties": {"periods": 3}})",
+                             R"({"properties": {"periods": [{"temperature": 41}]}})"})
+        EXPECT_FALSE(parse_nws_hourly(body)) << body;
 }

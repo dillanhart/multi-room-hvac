@@ -657,3 +657,28 @@ Design by the user; code and tests written by Claude. 169 pass (25 new), 0 fail.
 
 - Pass 2: threads + cpp-httplib API, history ring, weather fetch thread, main loop.
 - CO2 thresholds depend on SCD41 calibration (ASC off, no forced recalibration yet).
+
+## 2026-11-19 (later) — Threads, HTTP API, history ring, weather fetch (rewrite pass 2 of 2)
+
+Design by the user; code and tests written by Claude. 194 pass + 11 relay, 0 fail. Not yet built or run on the Pi.
+
+- **Threads around one mutex** (`thermostat.h`): control pass every 60 s (`control_tick`), cpp-httplib v0.64.0 (vendored, `pi/third_party/`) serving the API, a weather thread, `main` waiting in `sigwait`. Replaces the `poll()` plan. ThreadSanitizer run on the API tests (incl. a 4-client stress test): no races.
+- **API** (`api.cpp`, port 8080): handlers are plain functions (tested without a server); `net.cpp` is the only file that includes httplib. LAN / loopback / tailnet only. Smoke-tested locally with curl against every endpoint.
+- **Vacations in Unix seconds** over the API (user); `parse_us_time` / `format_us_time` removed. Unknown block id → 404 (new `request_result::not_found`).
+- **History**: 24 h RAM ring, one entry per pass, starts once NTP has synced. No separate events buffer (user: every change happens in a pass).
+- **Weather**: nightly, hourly tries 00:00–08:00 until one works; gridpoint/contact from env vars (`thermostat.env`, git-ignored). `FULL_DAY_HOURS` 20 → 16 (user). Real NWS fetch tested locally (example gridpoint): 156 hours parsed.
+- Found: `compile.py` never listed `validation.cpp`, which `main` calls (`update_node`), so a Pi build would fail at link. Fixed; it also skips unchanged objects now.
+- User's edits during pass 1 review, tests updated to match: em heat checked before cool (closes the TODO "Decide" item); CO2 average always uses day weights.
+- Claude's choices, not discussed: before NTP sync no away, no vacation clean-up and no weather gate (control still runs); a fresh install fetches weather at any hour; 30 s NWS connect/read timeout; SIGTERM/SIGINT turn the relays off before exit; API errors carry a short `{"error"}` reason.
+
+### Open
+
+- On the Pi: `apt install libssl-dev`, create `thermostat.env`, `./deploy.sh build`.
+- Satellite polling; watcher program; systemd unit.
+
+## 2026-11-20 — First run on the Pi: fan held off heat
+
+Found by the user on the first run. Fix by Claude, rule by the user. 195 pass + 11 relay.
+
+- Circulating blocked a heat call for its full 5 min min-on. Rule changed: the fan's min-on only holds off circulating → idle; heat/cool take over as soon as min-off allows.
+- Also seen: after a program start, heat waits 10 min (boot stamps `cycle_end`: power-blip protection) while the fan may start at once. Expected, not a bug.

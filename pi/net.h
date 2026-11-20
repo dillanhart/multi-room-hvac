@@ -1,32 +1,42 @@
 /*
- * net.h - TCP sockets: ask another device for info, and serve our status
+ * net.h - everything that touches the network, on top of cpp-httplib:
+ * the HTTP API server (handlers in api.cpp) and the NWS forecast fetch.
+ *
+ * httplib.h is ~24k lines, so only net.cpp includes it; this header just
+ * forward-declares the server, and the rest of the program never compiles it.
  */
 
 #ifndef NET_H
 #define NET_H
 
-#include <stddef.h>         // size_t
+#include <memory>
+#include <optional>
+#include <string>
+#include <thread>
+#include "thermostat.h"   // shared_state
 
-#include "sensor.h"
+namespace httplib { class Server; }
 
-/*
- * Connect to ip:port, send msg, and read the reply into reply (always
- * NUL-terminated). Returns the number of bytes read, or -1 on failure.
- */
-int net_request(const char *ip, int port, const char *msg,
-                char *reply, size_t reply_len);
+// The API server: runs on its own thread (plus httplib's worker pool).
+class api_server {
+public:
+    explicit api_server(shared_state& s);
+    ~api_server();   // stops the server if still running
 
-/*
- * Start listening for status requests on port (all interfaces).
- * Returns the listening socket, or -1 on failure.
- */
-int net_listen(int port);
+    // bind 0.0.0.0:port and start serving; false if the port can't be bound
+    bool start(int port);
+    void stop();
 
-/*
- * Wait up to timeout_ms for clients on listen_fd. Each client that connects
- * gets one line with the latest reading and relay states, then is closed.
- * Use this in place of sleep() in the main loop.
- */
-void net_serve(int listen_fd, const struct sensor_result *latest, int timeout_ms);
+private:
+    shared_state& state;
+    std::unique_ptr<httplib::Server> server;
+    std::thread thread;
+};
+
+// GET https://api.weather.gov/gridpoints/<gridpoint>/forecast/hourly
+// gridpoint: "BOU/62,60" style; contact: put in the User-Agent, which NWS requires.
+// The body on HTTP 200; nullopt on any failure (logged). Each connect/read gives up
+// after WEATHER_TIMEOUT_SEC.
+std::optional<std::string> fetch_nws_hourly(const std::string& gridpoint, const std::string& contact);
 
 #endif

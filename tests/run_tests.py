@@ -5,7 +5,8 @@ Build and run the unit tests on the dev machine (not the Pi).
     python3 tests/run_tests.py --gtest_filter='TestSwitch.*'   extra args go to the test binary
 
 Two test binaries, because relay.cpp and fake_relay.cpp define the same functions:
-  unit_tests   pi/ logic + net.cpp, linked against fake_relay.cpp instead of relay.cpp
+  unit_tests   pi/ logic + API handlers, linked against fake_relay.cpp instead of relay.cpp
+               (net.cpp, the httplib wiring, isn't built here: no server in the tests)
   relay_tests  the real relay.cpp, linked against fake_gpiod.cpp instead of libgpiod
 No GPIO, I2C or libgpiod is needed. tests/gpiod/gpiod.h is a copy of the Pi's
 libgpiod v2 header (LGPL-2.1-or-later), so relay.cpp compiles here.
@@ -21,9 +22,10 @@ BUILD = os.path.join(HERE, "build")
 
 # binary name -> (code under test from pi/, test files and fakes from tests/)
 BINARIES = {
-    "unit_tests": (["control.cpp", "validation.cpp", "net.cpp", "data_store.cpp", "weather.cpp"],
-                   ["fake_relay.cpp", "test_validation.cpp", "test_control.cpp", "test_net.cpp",
-                    "test_data_store.cpp", "test_weather.cpp"]),
+    "unit_tests": (["control.cpp", "validation.cpp", "data_store.cpp", "weather.cpp",
+                    "history.cpp", "thermostat.cpp", "api.cpp"],
+                   ["fake_relay.cpp", "test_validation.cpp", "test_control.cpp",
+                    "test_data_store.cpp", "test_weather.cpp", "test_history.cpp", "test_api.cpp"]),
     "relay_tests": (["relay.cpp"],
                     ["fake_gpiod.cpp", "test_relay.cpp"]),
 }

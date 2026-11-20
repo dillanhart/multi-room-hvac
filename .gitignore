@@ -15,3 +15,6 @@ additional_files/
 
 # unit test build output (python3 tests/run_tests.py)
 tests/build/
+
+# NWS gridpoint and contact (pi/thermostat.env.example shows the format)
+pi/thermostat.env

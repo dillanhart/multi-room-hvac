@@ -4,12 +4,10 @@
  */
 
 #include "data_store.h"
-#include "weather.h"      // season_from_weather, resolve_mode, outside_temp_at
 
 #include <algorithm>      // std::remove_if, std::any_of, std::max
 #include <cerrno>
 #include <cstdio>         // std::rename
-#include <ctime>          // strptime, mktime, localtime_r, strftime
 #include <fstream>
 #include <iostream>
 #include <fcntl.h>        // open
@@ -76,7 +74,7 @@ static std::optional<json> read_json_file(const std::string& path) {
     return data;
 }
 
-static const char* mode_name(hvac_mode m) {
+const char* mode_name(hvac_mode m) {
     switch (m) {
         case hvac_mode::auto_select: return "auto";
         case hvac_mode::heat:        return "heat";
@@ -86,7 +84,7 @@ static const char* mode_name(hvac_mode m) {
     return "auto";
 }
 
-static std::optional<hvac_mode> mode_from_name(const std::string& name) {
+std::optional<hvac_mode> mode_from_name(const std::string& name) {
     for (hvac_mode m : {hvac_mode::auto_select, hvac_mode::heat, hvac_mode::cool, hvac_mode::both})
         if (name == mode_name(m)) return m;
     return std::nullopt;
@@ -104,12 +102,13 @@ static json weather_to_json(const weather_data& w) {
     return {{"fetched_at", w.fetched_at}, {"hourly", hourly}};
 }
 
+json vacation_json(const vacation_block& b) {
+    return {{"block_id", b.block_id}, {"vacation_start", b.vacation_start}, {"vacation_end", b.vacation_end}};
+}
+
 static json vacations_to_json(const vacation_list& v) {
     json blocks = json::array();
-    for (const auto& b : v.blocks)
-        blocks.push_back({{"block_id", b.block_id},
-                          {"vacation_start", b.vacation_start},
-                          {"vacation_end", b.vacation_end}});
+    for (const auto& b : v.blocks) blocks.push_back(vacation_json(b));
     return {{"next_id", v.next_id}, {"blocks", blocks}};
 }
 
@@ -300,16 +299,14 @@ request_result update_set_points(settings_store& store, const json& request) {
     return save_points(store);
 }
 
-// read "vacation_start"/"vacation_end" from request into b if present;
-// false if one is present but isn't a valid US time string
+// read "vacation_start"/"vacation_end" (Unix seconds) from request into b if present;
+// false if one is present but isn't a whole number
 static bool read_times(const json& request, vacation_block& b) {
     for (auto [key, field] : {std::pair{"vacation_start", &b.vacation_start},
                               std::pair{"vacation_end", &b.vacation_end}}) {
         if (!request.contains(key)) continue;
-        if (!request[key].is_string()) return false;
-        std::optional<long long> t = parse_us_time(request[key].get<std::string>());
-        if (!t) return false;
-        *field = *t;
+        if (!request[key].is_number_integer()) return false;
+        *field = request[key].get<long long>();
     }
     return true;
 }
@@ -333,14 +330,10 @@ static vacation_block* find_block(settings_store& store, int block_id) {
     return nullptr;
 }
 
-request_result change_vacation(settings_store& store, const json& request) {
-    if (!only_keys(request, {"block_id", "vacation_start", "vacation_end"}) ||
-        !request.contains("block_id") || !request["block_id"].is_number_integer() ||
-        request.size() < 2)   // nothing to change
-        return request_result::rejected;
-
-    vacation_block* existing = find_block(store, request["block_id"].get<int>());
-    if (!existing) return request_result::rejected;
+request_result change_vacation(settings_store& store, int block_id, const json& request) {
+    vacation_block* existing = find_block(store, block_id);
+    if (!existing) return request_result::not_found;
+    if (!only_keys(request, {"vacation_start", "vacation_end"})) return request_result::rejected;
 
     vacation_block next = *existing;
     if (!read_times(request, next) || !valid_block(next)) return request_result::rejected;
@@ -353,7 +346,7 @@ request_result remove_vacation(settings_store& store, int block_id) {
     auto& blocks = store.vacations.blocks;
     auto it = std::remove_if(blocks.begin(), blocks.end(),
                              [&](const vacation_block& b) { return b.block_id == block_id; });
-    if (it == blocks.end()) return request_result::rejected;   // no such block
+    if (it == blocks.end()) return request_result::not_found;
     blocks.erase(it, blocks.end());
     return save_vacations(store);
 }
@@ -390,45 +383,12 @@ bool is_away(const vacation_list& vacations, long long now_unix) {
 
 // ---------------------------------------------------------------- API output
 
-json settings_json(const settings_store& store, long long now_unix) {
+json set_points_json(const settings_store& store) {
+    return points_to_json(store.points, store.mode);
+}
+
+json vacations_json(const settings_store& store) {
     json blocks = json::array();
-    for (const auto& b : store.vacations.blocks)
-        blocks.push_back({{"block_id", b.block_id},
-                          {"vacation_start", format_us_time(b.vacation_start)},
-                          {"vacation_end", format_us_time(b.vacation_end)}});
-    std::optional<float> outside = outside_temp_at(store.weather, now_unix);
-    return {{"set_points", points_to_json(store.points, store.mode)},
-            {"active_mode", mode_name(resolve_mode(store.mode, season_from_weather(store.weather)))},
-            {"outside_temp", outside ? json(*outside) : json(nullptr)},
-            {"vacations", blocks},
-            {"all_saved", !store.points_unsaved && !store.vacations_unsaved && !store.weather_unsaved}};
-}
-
-// ---------------------------------------------------------------- US time
-
-std::optional<long long> parse_us_time(const std::string& text) {
-    std::tm tm{};
-    const char* end = strptime(text.c_str(), "%m/%d/%Y %H:%M", &tm);
-    if (!end || *end != '\0') return std::nullopt;   // didn't match, or trailing junk
-
-    std::tm wanted = tm;
-    tm.tm_isdst = -1;                 // let mktime work out whether DST applies
-    std::time_t t = std::mktime(&tm);
-    if (t == -1) return std::nullopt;
-
-    // mktime quietly rolls impossible dates over (02/30 -> 03/02, a skipped 2:30 am
-    // -> 3:30 am); if anything moved, the input wasn't a real local time
-    if (tm.tm_year != wanted.tm_year || tm.tm_mon != wanted.tm_mon || tm.tm_mday != wanted.tm_mday ||
-        tm.tm_hour != wanted.tm_hour || tm.tm_min != wanted.tm_min)
-        return std::nullopt;
-    return t;
-}
-
-std::string format_us_time(long long unix_time) {
-    std::time_t t = unix_time;
-    std::tm tm{};
-    localtime_r(&t, &tm);
-    char buf[32];
-    std::strftime(buf, sizeof buf, "%m/%d/%Y %H:%M", &tm);
-    return buf;
+    for (const auto& b : store.vacations.blocks) blocks.push_back(vacation_json(b));
+    return {{"blocks", blocks}};
 }

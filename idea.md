@@ -124,14 +124,14 @@ Weights change by time of day — the bedroom's extra authority midnight–8am i
 
 **Two programs** (decided 2026-09-30): the control program owns the relays and sensors; the display program owns the screen and touch input (and pushbuttons, if kept) and is a client of the same JSON API as the web UI, over `localhost`. A display hang or crash can't stall HVAC control, and every setting change goes through one validation path.
 
-The control program is one single-threaded **event loop**. The loop runs forever, but it never busy-waits: each pass blocks in `poll()` on every input — HTTP sockets and `signalfd` for SIGTERM. `poll()` returns the moment any of them is ready, so input is handled within milliseconds even while the furnace or AC is running.
+The control program runs **threads around one shared state** (decided 2026-11-19, replacing the single-threaded `poll()` loop planned earlier): a control thread runs one pass every 60 s (read sensors, decide, switch relays, record history); cpp-httplib's own threads answer API requests at once from the last pass's data; a weather thread does the nightly fetch; `main` waits for SIGTERM/SIGINT. One mutex guards everything shared (settings, control state, last-pass snapshot, history ring), and nothing slow (network, I2C) runs while holding it. Requests only change settings; relays change only in the control pass, so a request takes effect within 60 s and every status change lands in history. cpp-httplib won over Mongoose (GPL, single loop) and libmicrohttpd (verbose C callbacks): simplest handlers, plus an HTTPS client for NWS.
 
 - **Heating/cooling is a state, not a loop.** States are `idle / heating / em_heating / cooling / circulating` (`hvac_status`). Each pass checks whether it should change, acts, and returns. Nothing waits inside a handler.
-- **`poll()` timeout = time until the earliest deadline**, not a fixed sleep. Each periodic job keeps its own next-due time (control step ~30 s, satellite poll ~60 s). Multiple `timerfd`s are an equivalent option.
+- **Fixed schedule:** the next pass is due 60 s after the previous one was due, not 60 s after it finished.
 - **The decision is a pure function**: `test_switch(state, command, timestamps, now) → new state`. It touches no hardware, so the timing rules can be tested on a desktop with fake inputs.
 - **The display redraws only when something changed**, and only the changed region. A full 320×240 RGB565 frame is ~150 KB, ~150 ms at the current 8 MHz SPI.
-- **No blocking calls inside the loop.** `get_sensor_data()` does a single data-ready check and never waits (done 2026-10-03). Satellite fetches go through libcurl's multi interface (plugs into `poll()`), or at minimum a short timeout. The HTTP server has to run inside this loop: Mongoose is designed for that, and libmicrohttpd supports it in "external select" mode. *Library choice still open.*
-- **On SIGTERM, switch every relay off before exiting** — the software half of the fail-safe.
+- **No slow calls in the control pass.** `get_sensor_data()` does a single data-ready check and never waits (done 2026-10-03). The weather fetch has its own thread so a slow NWS can't delay control; satellite polling will need a short timeout.
+- **On SIGTERM/SIGINT, switch every relay off before exiting** — the software half of the fail-safe. A crash or `kill -9` is left to a planned watcher program.
 - All timing on `CLOCK_MONOTONIC`, never wall-clock time.
 
 ### Avoiding short-cycling
@@ -155,7 +155,7 @@ The real risk is the AC and furnace fighting each other — AC overshoots cold, 
 - **Heat ↔ cool always goes through idle**, so min-off applies before the other system starts. It skips min-on: a switch within minutes means something is wrong, and stopping beats continuing to heat. Rare in practice, since the temperature has to cross the whole deadband.
 - **Emergency heat** (below `MIN_HEAT`, 60 °F) starts at once from any status (skips min-on, min-off, mode, season, gate) and has no max-run: it runs as long as it's called for. Only the furnace's own high-limit and the sensor checks guard a sensor stuck low.
 - **No sensor data** = request idle: a running cycle finishes its min-on, then stops; idle stays idle.
-- **Fan** (decided 2026-11-19): `circulating` is a status. It skips min-off, always runs at least min-on (only em heat cuts in), and has no max-run. A fan call never cuts heat/cool short: they finish min-on, then go to circulating instead of idle. Calls come from manual fan-on (RAM only, held off while away), the zone temperature spread, and CO2: a room > 1000 ppm and > 1.2 × weighted average starts it, ≤ 1.1 × stops it; rooms without a trusted reading count as 700 ppm.
+- **Fan** (decided 2026-11-19): `circulating` is a status. It skips min-off and has no max-run. Its min-on only holds off a stop to idle: heat/cool take over as soon as min-off allows (changed 11-20 after a bench run), em heat at once. A fan call never cuts heat/cool short: they finish min-on, then go to circulating instead of idle. Calls come from manual fan-on (RAM only, held off while away), the zone temperature spread, and CO2: a room > 1000 ppm and > 1.2 × weighted average starts it, ≤ 1.1 × stops it; rooms without a trusted reading count as 700 ppm.
 
 ### Failure handling
 
@@ -182,7 +182,7 @@ The Pi keeps its settings in two JSON files so they survive a restart (built 202
 - **`vacation.json`:** `next_id` plus a list of blocks (`block_id`, `vacation_start` = departure, `vacation_end` = return). Ids are never reused, so blocks can be edited or removed by id later.
 - **Location:** `~/thermostat/` next to the program (`DATA_DIR`). `deploy.sh` excludes both files, since an rsync push would otherwise overwrite live settings with the repo's examples.
 - **Format: JSON** (nlohmann/json), shared with the API code.
-- **Times:** Unix seconds in the file; the API takes and shows US local time (`12/25/2026 13:00`). The Pi's time zone is set locally and never changes. `mktime` with `tm_isdst = -1` handles DST; a time skipped by spring-forward is rejected.
+- **Times:** Unix seconds in the file and the API (changed 2026-11-19; the API used to take US local time strings). The website converts in the house's time zone, which the Pi's matches.
 - **Read only at startup.** Missing or invalid `hvac_points.json` → struct defaults. Missing/invalid `vacation.json` → no vacations; a single invalid block is dropped and the rest load.
 - **Every change:** validate → update RAM → atomic write (temp file, `fsync`, `rename()`, `fsync` the directory). A rejected request changes neither RAM nor file.
 - **Failed write:** the new values are already validated and are what the user wants, so they stay in use. An unsaved flag is retried every loop pass, writing whatever is current (no queue). Logged when it fails and when it recovers. Only loss: a restart before a retry succeeds.
@@ -196,7 +196,7 @@ The Pi keeps its settings in two JSON files so they survive a restart (built 202
 
 **Mode** (decided 2026-11-17): `auto` / `heat` / `cool` / `both`, saved in `hvac_points.json`, set through `PUT /setpoints`. Manual modes stay until set back to `auto`. This is how the user overrides a wrong season, or sets one when the weather API is down. Kept outside `hvac_set_points` so the away swap can't drop it.
 
-**Season lockout (auto mode):** `weather.json` holds a week of hourly forecast, fetched once a day, written only by the program (kept apart from user settings). Season = average daily low over the full days in it (≥ 20 hours, so a fetch starting mid-morning doesn't miss a low): below 55 → heat only; above 65 → cool only; between → both, weather gate decides. The 7-day average and the band in between keep it from flip-flopping, so there's no separate hysteresis. **No expiry:** stale data keeps its season, because AC in winter is the failure that matters. No data at all → heat only (Claude's choice; manual mode overrides).
+**Season lockout (auto mode):** `weather.json` holds up to a week of hourly NWS forecast (`forecast/hourly` gives ~156 hours), written only by the program (kept apart from user settings). Fetched nightly: one try an hour from midnight to 8 am until one succeeds (any hour on a fresh install), straight from the known gridpoint; gridpoint and contact come from environment variables so they stay out of git. Season = average daily low over the full days in it (≥ 16 hours, so a fetch up to 8 am still counts that day): below 55 → heat only; above 65 → cool only; between → both, weather gate decides. The 7-day average and the band in between keep it from flip-flopping, so there's no separate hysteresis. **No expiry:** stale data keeps its season, because AC in winter is the failure that matters. No data at all → heat only (Claude's choice; manual mode overrides).
 
 **Weather gate:** no cooling when the forecast for the current hour is ≥ 5° below the active AC point; no heating when it's ≥ 5° above the active heat point. "Active" is after the night shift. Unknown outside temp → gate skipped (fail open, 10-10). Em heat ignores mode, season and gate.
 
@@ -204,7 +204,7 @@ The Pi keeps its settings in two JSON files so they survive a restart (built 202
 
 ### Web UI ↔ Pi
 
-The Pi exposes a small **JSON-over-HTTP API**; the Ubuntu web app and the local display program are its clients. Browsers never talk to the Pi directly. Endpoints along the lines of `GET /status`, `PUT /setpoints`, `PUT /vacation`, `GET /history`, `GET /events`.
+The Pi exposes a small **JSON-over-HTTP API**; the Ubuntu web app and the local display program are its clients. Browsers never talk to the Pi directly. Endpoints (built 2026-11-19, listed in `pi/api.h`): `GET /status`, `GET /readings?view=main|all`, `GET`/`PUT /setpoints`, `GET`/`POST /vacations`, `PUT`/`DELETE /vacations/{id}`, `PUT /fan`, `GET /history?since=`, on port 8080. No sign-in by design: any client on the LAN, loopback or the tailnet may write; the Pi has no ports open to the internet.
 
 Rejected alternatives:
 - **MQTT (Mosquitto)** — the home-automation standard, decoupled, retained messages. Adds a broker to run, and a broker on Ubuntu would make satellite data depend on Ubuntu being up. Worth revisiting if voice control or more devices happen; the broker would then live on the Pi.
@@ -221,10 +221,9 @@ At minimum: timestamp, per-zone temp/humidity/CO2, current mode (AC/furnace/idle
 
 **7-day temperature history on the website** (nice-to-have, not required). The Ubuntu server stores the history; the Pi does not.
 
-- **The Pi keeps a RAM ring buffer** of recent readings (e.g. 24 h at 1-min intervals = 1,440 entries) and serves `GET /history?since=<unix ts>`. Ubuntu asks for everything after its last stored timestamp, so an Ubuntu outage backfills automatically instead of leaving a gap. RAM-only — no SD writes.
-- **State transitions are a separate event buffer** (`GET /events?since=...`: time, old → new state, reason). Samples alone miss cycles shorter than the sample interval, and the transitions are what prove short-cycling protection works. Charted as shaded "AC on" / "heat on" bands behind the temperature lines.
-- **Sample every 1 min** (5 at most), not 10 — 10-minute samples smooth over exactly the cycles worth seeing. ~4,300 rows/day across three zones is nothing.
-- **Timestamps come from the Pi, in UTC**, taken when the reading is taken, not when Ubuntu fetches it. The Pi 3 has no battery-backed clock, so nothing is recorded until the clock has synced with a time server (`timedatectl` shows sync status).
+- **The Pi keeps a RAM ring buffer** of the last 24 h, one entry per control pass (1,440): time, status, mode as set, each sensor's temp/RH/CO2 with its trusted flag (null if it never reported), and the weighted average control used. Served by `GET /history?since=<unix ts>`; Ubuntu asks for everything after its last stored row, so an Ubuntu outage of up to a day backfills instead of leaving a gap. RAM-only — no SD writes.
+- **No separate event buffer** (decided 2026-11-19, replacing the planned `GET /events`): the status can only change in a control pass, and every pass is recorded, so the samples already contain every transition.
+- **Timestamps are Unix seconds from the Pi**, taken in the control pass. The Pi 3 has no battery-backed clock, so nothing is recorded until NTP has synced (`ntp_adjtime`, `STA_UNSYNC` clear). Until then control still runs, but without anything that needs the date: no away, no vacation clean-up, no weather gate, no fetch.
 - **Ubuntu side:** SQLite, one table (timestamp, zone, temp, RH, CO2, HVAC state). Keep everything (a year is tens of MB) and display the last 7 days. Charts with uPlot or Chart.js. The public demo reads the same database.
 
 ### Where software lives

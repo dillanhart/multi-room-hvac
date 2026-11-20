@@ -14,9 +14,7 @@ bool is_night_now() {
 }
 
 
-// calculate the weighted temp from trusted sensors;
-// std::nullopt if no sensor is trusted
-static std::optional<float> calculate_weighted_temperature(const std::vector<sensor_node>& nodes, bool is_night) {
+std::optional<float> weighted_temperature(const std::vector<sensor_node>& nodes, bool is_night) {
     float total_weighted_temp = 0.0f;
     float total_weight = 0.0f;
 
@@ -76,7 +74,7 @@ hvac_command get_HVAC_command(const std::vector<sensor_node>& sensors, const hva
     bool fan_wanted = points.fan_allowed && (fan == fan_mode::on || co2_fan);
 
     // 1. Get the aggregated data; no valid sensors means no decision
-    std::optional<float> weighted = calculate_weighted_temperature(sensors, is_night);
+    std::optional<float> weighted = weighted_temperature(sensors, is_night);
     // the manual fan doesn't need temperatures, so it outranks no_data
     if (!weighted) return fan_wanted ? hvac_command::fan : hvac_command::no_data;
     float weighted_temp = *weighted;
@@ -148,8 +146,8 @@ static hvac_status status_for(hvac_command command) {
 // - heat/cool stop at MAX_RUN_TIME, to circulating if the fan is called, else idle.
 //   (em_heating -> heating keeps cycle_start, so that heating counts from the em heat start)
 // - idle -> circulating at once (fan skips min-off); idle -> heat/cool waits out min-off.
-// - circulating runs at least MIN_ON_TIME (only em heat cuts it short); then heat/cool
-//   still wait out min-off.
+// - circulating -> idle waits out MIN_ON_TIME. Heat/cool may take over sooner: they
+//   only wait out min-off (em heat doesn't wait at all).
 // - heat/cool/em heat finish min-on, then go where the command says: idle, or
 //   circulating when the fan is called (a fan call never cuts a run short).
 // - a heat <-> cool call stops the running side at once (skips min-on); the other side
@@ -175,8 +173,9 @@ hvac_status test_switch (hvac_status sys_status, hvac_command command, long long
             return hvac_status::idle;
 
         case hvac_status::circulating:
-            if (!min_on_done) return hvac_status::circulating;
-            if (wants_equipment && !min_off_done) return hvac_status::circulating;
+            // heat/cool may cut the fan's min-on short; only min-off holds them back
+            if (wants_equipment) return min_off_done ? requested : hvac_status::circulating;
+            if (!min_on_done) return hvac_status::circulating;   // fan -> idle: full min-on
             return requested;
 
         case hvac_status::heating:

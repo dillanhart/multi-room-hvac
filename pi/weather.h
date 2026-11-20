@@ -1,13 +1,15 @@
 /*
  * weather.h - what the stored hourly forecast means for control:
  * the season (which equipment auto mode allows) and the outside temp right now.
- * Pure functions: the fetch and weather.json live elsewhere (data_store.cpp).
+ * Pure functions: the HTTPS fetch is in net.cpp, weather.json in data_store.cpp.
  */
 
 #ifndef WEATHER_H
 #define WEATHER_H
 
 #include <optional>
+#include <string>
+#include <vector>
 #include "constants.h"    // weather_data, hvac_mode, thresholds
 
 enum class season {
@@ -29,7 +31,16 @@ hvac_mode resolve_mode(hvac_mode setting, season s);
 // forecast temp for the hour containing now; nullopt if not covered (gate skipped)
 std::optional<float> outside_temp_at(const weather_data& w, long long now_unix);
 
-// true once a day has passed since the last successful fetch (or never fetched)
-bool weather_due(const weather_data& w, long long now_unix);
+// time to try a fetch: at least WEATHER_RETRY since the last try, and either never
+// fetched, or between midnight and WEATHER_FETCH_END_HOUR with no success yet today
+// (local dates). last_attempt = 0 means no try yet.
+bool weather_fetch_due(const weather_data& w, long long now_unix, long long last_attempt);
+
+// the hourly temps from an NWS /gridpoints/.../forecast/hourly reply, in F.
+// nullopt if the reply isn't that shape or has no usable hours.
+std::optional<std::vector<hourly_temp>> parse_nws_hourly(const std::string& body);
+
+// "2026-11-19T14:00:00-07:00" -> Unix seconds; nullopt if it isn't that format
+std::optional<long long> parse_iso8601(const std::string& text);
 
 #endif

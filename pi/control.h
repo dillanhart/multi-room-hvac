@@ -45,10 +45,15 @@ control_state initial_control_state(long long now);
 // Reads the wall clock: call it in main and pass the result in, so the logic stays testable.
 bool is_night_now();
 
+// weighted average temp of the trusted sensors (day or night weights);
+// nullopt if none is trusted. The number get_HVAC_command decides on.
+std::optional<float> weighted_temperature(const std::vector<sensor_node>& sensors, bool is_night);
+
 // CO2 rule, with hysteresis. running = what this returned last pass.
 // Start: a trusted room over CO2_TRIGGER and over CO2_START_RATIO x the average.
 // Keep going while a trusted room is over CO2_STOP_RATIO x the average.
-// Average: weighted like temperature; a room with no trusted reading counts as CO2_FILL_PPM.
+// Average: weighted with the day weights (also at night); a room with no trusted
+// reading counts as CO2_FILL_PPM. is_night is currently unused.
 bool co2_fan_call(const std::vector<sensor_node>& sensors, bool is_night, bool running);
 
 // points: the user's set points, or AWAY_POINTS while away (fan_allowed = false holds off every fan call).

@@ -307,14 +307,21 @@ TEST_F(FanOnly, MinOnBlocksIdle) {
     EXPECT_EQ(relay_get(RELAY_FAN), 0);
 }
 
-// circulating runs its full min-on before heat/cool takes over (min-off long past here)
-TEST_F(FanOnly, MinOnBlocksHeat) {
+// the fan's min-on only holds off idle: heat takes over at once once min-off is past
+TEST_F(FanOnly, HeatDoesNotWaitForFanMinOn) {
     ASSERT_EQ(run(hvac_command::fan, PAST_MIN_OFF), hvac_status::circulating);
 
-    EXPECT_EQ(run(hvac_command::heat, WITHIN_MIN_ON), hvac_status::circulating);
-    EXPECT_EQ(run(hvac_command::heat, MIN_ON_TIME), hvac_status::heating);
+    EXPECT_EQ(run(hvac_command::heat, SEC), hvac_status::heating);
     EXPECT_EQ(relay_get(RELAY_FAN), 0);
     EXPECT_EQ(relay_get(RELAY_HEAT), 1);
+}
+
+// right after boot the fan may start (skips min-off) but heat still waits out min-off
+TEST_F(FanOnly, HeatStillWaitsOutMinOffAfterBoot) {
+    ASSERT_EQ(run(hvac_command::fan, SEC), hvac_status::circulating);
+
+    EXPECT_EQ(run(hvac_command::heat, PAST_MIN_ON), hvac_status::circulating);
+    EXPECT_EQ(run(hvac_command::heat, MIN_OFF_TIME - PAST_MIN_ON), hvac_status::heating);   // now past min-off
 }
 
 // circulating longer than MAX_RUN_TIME must not trip heat's max-run when heat is called
@@ -412,12 +419,12 @@ TEST_F(HvacCommand, UntrustedSensorLeftOutOfSpread) {
     EXPECT_EQ(command({ sensor(71.5), sensor(74.5, false) }), hvac_command::none);
 }
 
-// current behavior: cool is checked first, so it wins over emergency heat.
-// Only reachable with ac_set < MIN_HEAT, which setpoint validation should block.
-TEST_F(HvacCommand, CoolCheckedBeforeEmergencyHeat) {
+// em heat is checked first, so it wins over cool even with ac_set < MIN_HEAT
+// (which setpoint validation blocks anyway)
+TEST_F(HvacCommand, EmergencyHeatCheckedBeforeCool) {
     hvac_set_points p = {.heat_point = 50, .ac_point = MIN_HEAT - 5, .night_difference = 0};
     EXPECT_EQ(get_HVAC_command({ sensor(MIN_HEAT - 2) }, p, false, hvac_mode::both, std::nullopt,
-                               fan_mode::auto_select, false), hvac_command::cool);
+                               fan_mode::auto_select, false), hvac_command::emergency_heat);
 }
 
 // by design: weight 0 means "ignore this sensor", so if it's the only one, there's no data
@@ -598,13 +605,15 @@ TEST_F(Co2Fan, NoTrustedRoomNoFan) {
     EXPECT_FALSE(co2_fan_call({}, false, true));
 }
 
-TEST_F(Co2Fan, UsesNightWeights) {
+// the CO2 average always uses the day weights, so the bedroom's night weight
+// doesn't drag the average toward itself
+TEST_F(Co2Fan, UsesDayWeightsAtNightToo) {
     sensor_node main = room(600), bed = room(1150);
     main.weight_day = 1; main.weight_night = 1;
     bed.weight_day = 1;  bed.weight_night = 3;
-    // day: average 875, start line 1050 -> on. night: average 1012, start line 1215 -> off
+    // day weights: average 875, start line 1050 -> on, day or night
     EXPECT_TRUE(co2_fan_call({ main, bed }, false, false));
-    EXPECT_FALSE(co2_fan_call({ main, bed }, true, false));
+    EXPECT_TRUE(co2_fan_call({ main, bed }, true, false));
 }
 
 // ---- control_step: a whole pass, with the state carried between passes ----
