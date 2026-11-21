@@ -19,8 +19,12 @@
  *   DELETE /vacations/{id}           -> 204
  *   PUT    /fan                      {"fan": "on"|"auto"} -> {"fan"}
  *   GET    /history?since=<unix>     {"entries": [...]}, oldest first, strictly after since
+ *   GET    /weather?hours=<n>        {"fetched_at", "hours": [hour...]}: from the hour containing
+ *                                    now, at most n (default 24); [] if none (fetched_at 0 = never)
  *
  * sensor = {"temp","humidity","co2","trusted"}; null if it has never reported.
+ * hour = {"time","temp","condition","is_day","short_forecast"}: condition is the NWS icon
+ *   code ("rain_showers", "tsra_sct", ... see api.weather.gov/icons), "" if NWS gave none.
  * Times are Unix seconds. Errors: 400 or 404 with {"error": "<reason>"}.
  * A change that's applied but not yet written to disk still succeeds (it's retried).
  */
@@ -48,6 +52,7 @@ api_reply put_vacation(shared_state& s, const std::string& id, const std::string
 api_reply delete_vacation(shared_state& s, const std::string& id);
 api_reply put_fan(shared_state& s, const std::string& body);
 api_reply get_history(shared_state& s, const std::string& since);   // "" = everything
+api_reply get_weather(shared_state& s, const std::string& hours, long long now_unix);   // "" = default
 
 // loopback, private LAN ranges (10/8, 172.16/12, 192.168/16) or Tailscale (100.64/10)
 bool is_local_address(const std::string& ip);

@@ -52,6 +52,7 @@ constexpr float WEATHER_GATE_MARGIN = 5;
 constexpr float WINTER_AVG_LOW = 55;   // average low below this: heating only
 constexpr float SUMMER_AVG_LOW = 65;   // average low above this: cooling only
 constexpr int WEATHER_DAYS = 7;                           // hourly forecast kept in weather.json
+constexpr int WEATHER_DEFAULT_HOURS = 24;                 // GET /weather with no ?hours=
 constexpr int WEATHER_FETCH_END_HOUR = 8;                 // fetch tries run midnight to 8 am, local time
 constexpr long long WEATHER_RETRY = 60 * 60;              // an hour between tries (Unix seconds)
 constexpr int WEATHER_TIMEOUT_SEC = 30;                   // per connect / read; a hung NWS reply gives up
@@ -116,14 +117,19 @@ constexpr hvac_set_points AWAY_POINTS = {.heat_point = 62, .ac_point = 90, .nigh
 // the rest are manual and stay until set back to auto. Saved in hvac_points.json.
 enum class hvac_mode { auto_select, heat, cool, both };
 
-struct hourly_temp {
-    long long time;   // start of the hour, Unix seconds
-    float temp;       // forecast outside temp, F
+// one hour of the NWS hourly forecast. Control uses only time and temp;
+// the rest is passed through to the display (GET /weather) for its icons.
+struct forecast_hour {
+    long long time;                // start of the hour, Unix seconds
+    float temp;                    // forecast outside temp, F
+    std::string condition = "";    // NWS icon code, e.g. "rain_showers"; "" = not given
+    bool is_day = true;            // NWS isDaytime: day or night icon
+    std::string short_forecast = "";   // NWS text, e.g. "Chance Light Rain"
 };
 
 struct weather_data {
     long long fetched_at = 0;          // Unix seconds; 0 = never fetched
-    std::vector<hourly_temp> hourly;   // sorted by time, up to WEATHER_DAYS * 24 entries
+    std::vector<forecast_hour> hourly; // sorted by time, up to WEATHER_DAYS * 24 entries
 };
 
 struct vacation_block {

@@ -80,7 +80,7 @@ void remove_finished_vacations(settings_store& store, long long now_unix);
 
 // a fresh forecast from the nightly fetch: keeps the hours from the current one
 // up to WEATHER_DAYS * 24, stamps fetched_at = now, saves. Never rejected.
-request_result update_weather(settings_store& store, std::vector<hourly_temp> hourly, long long now_unix);
+request_result update_weather(settings_store& store, std::vector<forecast_hour> hourly, long long now_unix);
 
 // retry any write that failed earlier
 void retry_unsaved(settings_store& store);
@@ -96,6 +96,8 @@ json set_points_json(const settings_store& store);
 json vacation_json(const vacation_block& b);
 // {"blocks": [...]}
 json vacations_json(const settings_store& store);
+// {"time", "temp", "condition", "is_day", "short_forecast"}: one hour, as in weather.json
+json forecast_hour_json(const forecast_hour& h);
 
 // "auto" / "heat" / "cool" / "both"
 const char* mode_name(hvac_mode m);

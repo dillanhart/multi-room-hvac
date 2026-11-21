@@ -41,7 +41,7 @@ Tests: `python3 tests/run_tests.py`. A failing or `DISABLED_` test is named next
 
 ## Display and touch
 
-- SPI clock is 8 MHz in `config.txt`; the old ILI9341 ran at 32 MHz. Raise it for the ST7789V.
+- ~~SPI clock is 8 MHz in `config.txt`; the old ILI9341 ran at 32 MHz. Raise it for the ST7789V.~~ Done 11-20 (user): 32 MHz.
 - Idle blanking unverified with `backlight-gpio` bound.
 - Touch filtering: stray 4095 / low reads at touch-down and lift (TI SBAA036; pressure from X, Z1, Z2).
 - Touch calibration: swap axes for landscape, map raw ~430-3650 to screen pixels. Reverses if the display is flipped 180°.

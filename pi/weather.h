@@ -36,9 +36,14 @@ std::optional<float> outside_temp_at(const weather_data& w, long long now_unix);
 // (local dates). last_attempt = 0 means no try yet.
 bool weather_fetch_due(const weather_data& w, long long now_unix, long long last_attempt);
 
-// the hourly temps from an NWS /gridpoints/.../forecast/hourly reply, in F.
-// nullopt if the reply isn't that shape or has no usable hours.
-std::optional<std::vector<hourly_temp>> parse_nws_hourly(const std::string& body);
+// the hours from an NWS /gridpoints/.../forecast/hourly reply: temp in F, plus the
+// icon condition, isDaytime and shortForecast (each optional: a missing one leaves
+// the default). nullopt if the reply isn't that shape or has no usable hours.
+std::optional<std::vector<forecast_hour>> parse_nws_hourly(const std::string& body);
+
+// the condition code from an NWS icon URL: ".../icons/land/night/rain_showers,20/tsra,40?size=small"
+// -> "rain_showers" (the first, when the hour changes partway). "" if there isn't one.
+std::string nws_icon_condition(const std::string& url);
 
 // "2026-11-19T14:00:00-07:00" -> Unix seconds; nullopt if it isn't that format
 std::optional<long long> parse_iso8601(const std::string& text);

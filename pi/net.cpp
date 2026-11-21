@@ -11,6 +11,7 @@
 #include "constants.h"
 
 #include <cstdio>
+#include <ctime>         // time
 
 // copy an api_reply into httplib's response
 static void send(httplib::Response& res, const api_reply& reply) {
@@ -63,6 +64,9 @@ api_server::api_server(shared_state& s) : state(s), server(std::make_unique<http
     });
     svr.Get("/history", [&st](const httplib::Request& req, httplib::Response& res) {
         send(res, get_history(st, req.get_param_value("since")));
+    });
+    svr.Get("/weather", [&st](const httplib::Request& req, httplib::Response& res) {
+        send(res, get_weather(st, req.get_param_value("hours"), time(nullptr)));
     });
 
     // unknown path or method: JSON like every other error

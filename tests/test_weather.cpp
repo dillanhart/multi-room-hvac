@@ -145,7 +145,7 @@ TEST(NwsHourly, ReadsPeriods) {
         {"number": 3, "startTime": "1970-01-01T02:00:00+00:00",
          "temperature": {"value": 10, "unitCode": "wmoUnit:degC"}}
     ]}})";
-    std::optional<std::vector<hourly_temp>> hours = parse_nws_hourly(body);
+    std::optional<std::vector<forecast_hour>> hours = parse_nws_hourly(body);
     ASSERT_TRUE(hours);
     ASSERT_EQ(hours->size(), 3u);
     EXPECT_EQ((*hours)[0].time, 0);
@@ -161,10 +161,39 @@ TEST(NwsHourly, SkipsBadPeriodsKeepsGoodOnes) {
         {"startTime": "1970-01-01T01:00:00+00:00", "temperature": null},
         {"startTime": "1970-01-01T02:00:00+00:00", "temperature": 39, "temperatureUnit": "F"}
     ]}})";
-    std::optional<std::vector<hourly_temp>> hours = parse_nws_hourly(body);
+    std::optional<std::vector<forecast_hour>> hours = parse_nws_hourly(body);
     ASSERT_TRUE(hours);
     ASSERT_EQ(hours->size(), 1u);
     EXPECT_EQ((*hours)[0].time, 7200);
+}
+
+TEST(NwsHourly, ReadsIconDaytimeAndText) {
+    std::string body = R"({"properties": {"periods": [
+        {"startTime": "1970-01-01T00:00:00+00:00", "temperature": 41, "isDaytime": false,
+         "icon": "https://api.weather.gov/icons/land/night/rain_showers,20?size=small",
+         "shortForecast": "Slight Chance Rain Showers"},
+        {"startTime": "1970-01-01T01:00:00+00:00", "temperature": 42}
+    ]}})";
+    std::optional<std::vector<forecast_hour>> hours = parse_nws_hourly(body);
+    ASSERT_TRUE(hours);
+    ASSERT_EQ(hours->size(), 2u);
+    EXPECT_EQ((*hours)[0].condition, "rain_showers");
+    EXPECT_FALSE((*hours)[0].is_day);
+    EXPECT_EQ((*hours)[0].short_forecast, "Slight Chance Rain Showers");
+    // all optional: missing ones keep the defaults, the hour is still used
+    EXPECT_EQ((*hours)[1].condition, "");
+    EXPECT_TRUE((*hours)[1].is_day);
+    EXPECT_EQ((*hours)[1].short_forecast, "");
+}
+
+TEST(NwsIcon, Condition) {
+    EXPECT_EQ(nws_icon_condition("https://api.weather.gov/icons/land/day/skc?size=small"), "skc");
+    EXPECT_EQ(nws_icon_condition("https://api.weather.gov/icons/land/night/tsra_sct,40?size=small"), "tsra_sct");
+    // the hour changes partway: the first
+    EXPECT_EQ(nws_icon_condition("https://api.weather.gov/icons/land/day/rain,30/snow,60?size=small"), "rain");
+    EXPECT_EQ(nws_icon_condition("https://api.weather.gov/icons/land/day/fog"), "fog");
+    for (const char* bad : {"", "https://api.weather.gov/icons/land/", "not a url"})
+        EXPECT_EQ(nws_icon_condition(bad), "") << bad;
 }
 
 TEST(NwsHourly, NotAForecast) {

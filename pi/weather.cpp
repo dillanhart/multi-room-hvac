@@ -107,17 +107,36 @@ static std::optional<float> period_temp_f(const json& period) {
     return std::nullopt;
 }
 
-std::optional<std::vector<hourly_temp>> parse_nws_hourly(const std::string& body) {
+std::string nws_icon_condition(const std::string& url) {
+    for (const char* marker : {"/day/", "/night/"}) {
+        size_t at = url.find(marker);
+        if (at == std::string::npos) continue;
+        size_t start = at + std::string(marker).size();
+        size_t end = url.find_first_of(",/?", start);
+        return url.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    }
+    return "";
+}
+
+std::optional<std::vector<forecast_hour>> parse_nws_hourly(const std::string& body) {
     json data = json::parse(body, nullptr, /*allow_exceptions=*/false);
     if (data.is_discarded()) return std::nullopt;
     try {
         const json& periods = data.at("properties").at("periods");
         if (!periods.is_array()) return std::nullopt;
-        std::vector<hourly_temp> hours;
+        std::vector<forecast_hour> hours;
         for (const auto& p : periods) {
             std::optional<long long> start = parse_iso8601(p.at("startTime").get<std::string>());
             std::optional<float> temp = period_temp_f(p);
-            if (start && temp) hours.push_back({*start, *temp});
+            if (!start || !temp) continue;
+            forecast_hour h{*start, *temp};
+            if (p.contains("icon") && p["icon"].is_string())
+                h.condition = nws_icon_condition(p["icon"].get<std::string>());
+            if (p.contains("isDaytime") && p["isDaytime"].is_boolean())
+                h.is_day = p["isDaytime"].get<bool>();
+            if (p.contains("shortForecast") && p["shortForecast"].is_string())
+                h.short_forecast = p["shortForecast"].get<std::string>();
+            hours.push_back(std::move(h));
         }
         if (hours.empty()) return std::nullopt;
         return hours;

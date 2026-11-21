@@ -129,7 +129,7 @@ The control program runs **threads around one shared state** (decided 2026-11-19
 - **Heating/cooling is a state, not a loop.** States are `idle / heating / em_heating / cooling / circulating` (`hvac_status`). Each pass checks whether it should change, acts, and returns. Nothing waits inside a handler.
 - **Fixed schedule:** the next pass is due 60 s after the previous one was due, not 60 s after it finished.
 - **The decision is a pure function**: `test_switch(state, command, timestamps, now) → new state`. It touches no hardware, so the timing rules can be tested on a desktop with fake inputs.
-- **The display redraws only when something changed**, and only the changed region. A full 320×240 RGB565 frame is ~150 KB, ~150 ms at the current 8 MHz SPI.
+- **The display redraws only when something changed**, and only the changed region. A full 320×240 RGB565 frame is ~150 KB, ~40 ms at 32 MHz SPI (raised from 8 MHz, 2026-11-20).
 - **No slow calls in the control pass.** `get_sensor_data()` does a single data-ready check and never waits (done 2026-10-03). The weather fetch has its own thread so a slow NWS can't delay control; satellite polling will need a short timeout.
 - **On SIGTERM/SIGINT, switch every relay off before exiting** — the software half of the fail-safe. A crash or `kill -9` is left to a planned watcher program.
 - All timing on `CLOCK_MONOTONIC`, never wall-clock time.
@@ -204,7 +204,7 @@ The Pi keeps its settings in two JSON files so they survive a restart (built 202
 
 ### Web UI ↔ Pi
 
-The Pi exposes a small **JSON-over-HTTP API**; the Ubuntu web app and the local display program are its clients. Browsers never talk to the Pi directly. Endpoints (built 2026-11-19, listed in `pi/api.h`): `GET /status`, `GET /readings?view=main|all`, `GET`/`PUT /setpoints`, `GET`/`POST /vacations`, `PUT`/`DELETE /vacations/{id}`, `PUT /fan`, `GET /history?since=`, on port 8080. No sign-in by design: any client on the LAN, loopback or the tailnet may write; the Pi has no ports open to the internet.
+The Pi exposes a small **JSON-over-HTTP API**; the Ubuntu web app and the local display program are its clients. Browsers never talk to the Pi directly. Endpoints (built 2026-11-19, listed in `pi/api.h`): `GET /status`, `GET /readings?view=main|all`, `GET`/`PUT /setpoints`, `GET`/`POST /vacations`, `PUT`/`DELETE /vacations/{id}`, `PUT /fan`, `GET /history?since=`, `GET /weather?hours=` (added 2026-11-20 for the display), on port 8080. No sign-in by design: any client on the LAN, loopback or the tailnet may write; the Pi has no ports open to the internet.
 
 Rejected alternatives:
 - **MQTT (Mosquitto)** — the home-automation standard, decoupled, retained messages. Adds a broker to run, and a broker on Ubuntu would make satellite data depend on Ubuntu being up. Worth revisiting if voice control or more devices happen; the broker would then live on the Pi.
@@ -214,6 +214,18 @@ Rules regardless of transport:
 - **The thermostat runs fully with Ubuntu down.** The web UI is only a remote control; the settings file keeps the last setpoints.
 - **The public demo has no route to write endpoints.** It reads status the Ubuntu server has already stored; demo requests are never passed through to the Pi.
 - **LAN-only still means anyone on the Wi-Fi.** Writes are accepted only from the Ubuntu server's IP, or the API listens only on the Pi's Tailscale interface (consistent with the control UI being tailnet-only).
+
+### Display screens (designed 2026-11-20)
+
+User's design; sketch in `images/Screenshot 2026-11-20 181225.png`. 320×240 landscape, black background.
+
+- **Main:** two halves. Left: main sensor temp (not the weighted average), coloured by status: white idle, red heating *and* em heating, light blue cooling, green circulating. No reading → a big **N/A**. Right: the next hour's forecast, a weather icon with the temp (°F) below. Tap left → set points; tap right → forecast.
+- **Forecast:** the next 5 hours, 3 on screen at a time, paged with arrows (0-1-2 → 2-3-4), not drag-scrolled. Oval **Done** (light blue-grey outline and text) bottom right → main.
+- **Set points:** heat point, then AC point, white, each with a red up arrow above and a blue down arrow below. One tap = one step; holding doesn't repeat. A step that crosses the other point pushes it too, shown live. Right side, stacked ovals: **Mode** (→ mode screen), **Fan** (green outline; black = auto, filled green = on), **Night** (→ night screen: `night_difference` with the same arrows), **Done** (→ main).
+- **Mode:** four buttons across the middle: Heat (red), Cool (blue), Both (burnt orange), Auto (grey), outlined; only the selected one is filled. Done → back to set points.
+- **Nothing is sent until the set-point Done.** Mode, fan, night difference and set points stay pending in the display until then; one Done may be two requests (`PUT /setpoints`, `PUT /fan`).
+- **Timeout:** 30 s since the last touch, on every screen → main, pending changes dropped.
+- **Icons:** Meteocons (MIT), animated if practical, separate day and night icons (from `is_day`). Chosen over the first pick, an Adobe Stock preview image, which isn't licensed for use in a public repo.
 
 ### Logging
 

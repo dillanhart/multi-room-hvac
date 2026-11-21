@@ -146,7 +146,7 @@ static void weather_loop(shared_state& shared, stop_signal& stop,
 
         std::optional<std::string> body = fetch_nws_hourly(gridpoint, contact);
         if (!body) continue;   // logged in fetch_nws_hourly; next try in WEATHER_RETRY
-        std::optional<std::vector<hourly_temp>> hours = parse_nws_hourly(*body);
+        std::optional<std::vector<forecast_hour>> hours = parse_nws_hourly(*body);
         if (!hours) {
             std::fprintf(stderr, "weather: reply had no usable hours\n");
             continue;

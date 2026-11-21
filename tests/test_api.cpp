@@ -254,6 +254,49 @@ TEST_F(Api, HistoryBadSince) {
 
 // The control pass and the HTTP handlers on several threads at once. Passing here
 // proves little by itself; build with -fsanitize=thread to catch an unlocked access.
+TEST_F(Api, WeatherFromTheCurrentHour) {
+    long long hour = NOW_UNIX / 3600 * 3600;
+    for (int i = -2; i < 30; i++)   // two past hours: kept in the store until the next fetch
+        s.settings.weather.hourly.push_back({hour + i * 3600LL, 40.0f + i});
+    s.settings.weather.hourly[2].condition = "bkn";
+    s.settings.weather.hourly[2].is_day = false;
+    s.settings.weather.hourly[2].short_forecast = "Mostly Cloudy";
+    s.settings.weather.fetched_at = 123;
+
+    api_reply r = get_weather(s, "", NOW_UNIX + 1800);
+    EXPECT_EQ(r.status, 200);
+    EXPECT_EQ(r.body["fetched_at"], 123);
+    ASSERT_EQ(r.body["hours"].size(), static_cast<size_t>(WEATHER_DEFAULT_HOURS));
+    const json& first = r.body["hours"][0];
+    EXPECT_EQ(first["time"], hour);   // the hour containing now
+    EXPECT_EQ(first["temp"], 40.0);
+    EXPECT_EQ(first["condition"], "bkn");
+    EXPECT_EQ(first["is_day"], false);
+    EXPECT_EQ(first["short_forecast"], "Mostly Cloudy");
+
+    r = get_weather(s, "5", NOW_UNIX);
+    ASSERT_EQ(r.body["hours"].size(), 5u);
+    EXPECT_EQ(r.body["hours"][4]["time"], hour + 4 * 3600);
+
+    r = get_weather(s, "168", NOW_UNIX);   // asks for more than there is
+    EXPECT_EQ(r.body["hours"].size(), 30u);
+}
+
+TEST_F(Api, WeatherNeverFetched) {
+    api_reply r = get_weather(s, "5", NOW_UNIX);
+    EXPECT_EQ(r.status, 200);
+    EXPECT_EQ(r.body["fetched_at"], 0);
+    EXPECT_TRUE(r.body["hours"].empty());
+}
+
+TEST_F(Api, WeatherBadHours) {
+    for (const char* bad : {"0", "-1", "169", "5x", "five"}) {
+        api_reply r = get_weather(s, bad, NOW_UNIX);
+        EXPECT_EQ(r.status, 400) << bad;
+        EXPECT_TRUE(r.body.contains("error"));
+    }
+}
+
 TEST_F(Api, ConcurrentRequestsAndPasses) {
     std::vector<std::thread> clients;
     for (int c = 0; c < 4; c++) {

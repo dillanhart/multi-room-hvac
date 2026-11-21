@@ -124,6 +124,27 @@ api_reply get_history(shared_state& s, const std::string& since) {
     return {200, {{"entries", list}}};
 }
 
+api_reply get_weather(shared_state& s, const std::string& hours, long long now_unix) {
+    int count = WEATHER_DEFAULT_HOURS;
+    if (!hours.empty()) {
+        std::optional<int> n = parse_number<int>(hours);
+        if (!n || *n < 1 || *n > WEATHER_DAYS * 24)
+            return error(400, "hours must be 1 to " + std::to_string(WEATHER_DAYS * 24));
+        count = *n;
+    }
+    std::lock_guard<std::mutex> guard(s.lock);
+    // the stored list keeps past hours until the next fetch: start at the one containing now
+    json list = json::array();
+    for (const auto& h : s.settings.weather.hourly) {
+        if (h.time + 3600 <= now_unix) continue;
+        if ((int)list.size() == count) break;
+        json j = forecast_hour_json(h);
+        j["temp"] = round1(h.temp);
+        list.push_back(j);
+    }
+    return {200, {{"fetched_at", s.settings.weather.fetched_at}, {"hours", list}}};
+}
+
 // ---------------------------------------------------------------- writes
 
 api_reply put_setpoints(shared_state& s, const std::string& body) {

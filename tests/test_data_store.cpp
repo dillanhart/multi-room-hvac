@@ -398,8 +398,8 @@ TEST_F(DataStore, UnknownModeInFileGivesDefaults) {
 
 // ---- weather.json ----
 
-static std::vector<hourly_temp> hours(long long start, int count, float temp) {
-    std::vector<hourly_temp> v;
+static std::vector<forecast_hour> hours(long long start, int count, float temp) {
+    std::vector<forecast_hour> v;
     for (int i = 0; i < count; i++) v.push_back({start + i * 3600LL, temp});
     return v;
 }
@@ -408,7 +408,7 @@ TEST_F(DataStore, WeatherSavedTrimmedAndReloaded) {
     long long hour = 1'795'000'000 / 3600 * 3600;   // on the hour
     long long now = hour + 30 * 60;
     // 10 days from 2 hours ago, given out of order
-    std::vector<hourly_temp> fetched = hours(hour - 2 * 3600, 240, 40);
+    std::vector<forecast_hour> fetched = hours(hour - 2 * 3600, 240, 40);
     std::reverse(fetched.begin(), fetched.end());
 
     EXPECT_EQ(update_weather(store, fetched, now), request_result::saved);
@@ -420,6 +420,31 @@ TEST_F(DataStore, WeatherSavedTrimmedAndReloaded) {
     EXPECT_EQ(r.weather.hourly.size(), store.weather.hourly.size());
     EXPECT_EQ(r.weather.hourly.front().time, hour);
     EXPECT_EQ(r.weather.fetched_at, now);
+}
+
+TEST_F(DataStore, WeatherConditionsReloaded) {
+    std::vector<forecast_hour> fetched = hours(1'000'000, 2, 40);
+    fetched[0].condition = "snow";
+    fetched[0].is_day = false;
+    fetched[0].short_forecast = "Light Snow";
+    update_weather(store, fetched, 1'000'000);
+
+    settings_store r = restart();
+    ASSERT_EQ(r.weather.hourly.size(), 2u);
+    EXPECT_EQ(r.weather.hourly[0].condition, "snow");
+    EXPECT_FALSE(r.weather.hourly[0].is_day);
+    EXPECT_EQ(r.weather.hourly[0].short_forecast, "Light Snow");
+    EXPECT_EQ(r.weather.hourly[1].condition, "");
+    EXPECT_TRUE(r.weather.hourly[1].is_day);
+}
+
+TEST_F(DataStore, WeatherFileFromBeforeConditionsLoads) {
+    write(store.weather_path, R"({"fetched_at": 5, "hourly": [{"time": 3600, "temp": 39}]})");
+    load_settings(store);
+    ASSERT_EQ(store.weather.hourly.size(), 1u);
+    EXPECT_FLOAT_EQ(store.weather.hourly[0].temp, 39);
+    EXPECT_EQ(store.weather.hourly[0].condition, "");
+    EXPECT_TRUE(store.weather.hourly[0].is_day);
 }
 
 TEST_F(DataStore, OldWeatherStillLoads) {

@@ -96,9 +96,14 @@ static json points_to_json(const hvac_set_points& p, hvac_mode mode) {
             {"night_difference", p.night_difference}, {"mode", mode_name(mode)}};
 }
 
+json forecast_hour_json(const forecast_hour& h) {
+    return {{"time", h.time}, {"temp", h.temp}, {"condition", h.condition},
+            {"is_day", h.is_day}, {"short_forecast", h.short_forecast}};
+}
+
 static json weather_to_json(const weather_data& w) {
     json hourly = json::array();
-    for (const auto& h : w.hourly) hourly.push_back({{"time", h.time}, {"temp", h.temp}});
+    for (const auto& h : w.hourly) hourly.push_back(forecast_hour_json(h));
     return {{"fetched_at", w.fetched_at}, {"hourly", hourly}};
 }
 
@@ -206,11 +211,11 @@ static vacation_list load_vacations(const std::string& path) {
 }
 
 // keep hours from the one containing now_unix onward, sorted, at most WEATHER_DAYS * 24
-static void trim_weather(std::vector<hourly_temp>& hourly, long long now_unix) {
+static void trim_weather(std::vector<forecast_hour>& hourly, long long now_unix) {
     std::sort(hourly.begin(), hourly.end(),
-              [](const hourly_temp& a, const hourly_temp& b) { return a.time < b.time; });
+              [](const forecast_hour& a, const forecast_hour& b) { return a.time < b.time; });
     hourly.erase(std::remove_if(hourly.begin(), hourly.end(),
-                                [&](const hourly_temp& h) { return h.time + 3600 <= now_unix; }),
+                                [&](const forecast_hour& h) { return h.time + 3600 <= now_unix; }),
                  hourly.end());
     if (hourly.size() > static_cast<size_t>(WEATHER_DAYS * 24)) hourly.resize(WEATHER_DAYS * 24);
 }
@@ -229,14 +234,19 @@ static weather_data load_weather(const std::string& path) {
 
     for (const auto& item : (*data)["hourly"]) {
         try {
-            w.hourly.push_back({item.at("time").get<long long>(), item.at("temp").get<float>()});
+            forecast_hour h{item.at("time").get<long long>(), item.at("temp").get<float>()};
+            // files written before 2026-11-20 have only time and temp
+            h.condition = item.value("condition", "");
+            h.is_day = item.value("is_day", true);
+            h.short_forecast = item.value("short_forecast", "");
+            w.hourly.push_back(std::move(h));
         } catch (const json::exception& e) {
             std::cerr << path << ": dropping unreadable hour: " << e.what() << "\n";
         }
     }
     // no trimming by age here: old data keeps its season (no expiry, by design)
     std::sort(w.hourly.begin(), w.hourly.end(),
-              [](const hourly_temp& a, const hourly_temp& b) { return a.time < b.time; });
+              [](const forecast_hour& a, const forecast_hour& b) { return a.time < b.time; });
     return w;
 }
 
@@ -362,7 +372,7 @@ void remove_finished_vacations(settings_store& store, long long now_unix) {
     save_vacations(store);
 }
 
-request_result update_weather(settings_store& store, std::vector<hourly_temp> hourly, long long now_unix) {
+request_result update_weather(settings_store& store, std::vector<forecast_hour> hourly, long long now_unix) {
     trim_weather(hourly, now_unix);
     store.weather = {.fetched_at = now_unix, .hourly = std::move(hourly)};
     return save_weather(store);

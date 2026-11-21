@@ -682,3 +682,20 @@ Found by the user on the first run. Fix by Claude, rule by the user. 195 pass + 
 
 - Circulating blocked a heat call for its full 5 min min-on. Rule changed: the fan's min-on only holds off circulating → idle; heat/cool take over as soon as min-off allows.
 - Also seen: after a program start, heat waits 10 min (boot stamps `cycle_end`: power-blip protection) while the fan may start at once. Expected, not a bug.
+
+## 2026-11-20 (later) — Display screens designed; forecast conditions + `GET /weather`
+
+Screens designed by the user (idea.md → Display screens). Backend by Claude. 202 pass + 11 relay. Not yet run on the Pi.
+
+- SPI raised to 32 MHz (user).
+- Icon set: Meteocons (MIT), day/night variants. The first pick, an Adobe Stock preview, was dropped: not licensed for a public repo.
+- Forecast: drag-scrolling dropped for paging (resistive touch is noisy at touch-down and lift).
+- `hourly_temp` → `forecast_hour`, now also stores `condition` (NWS icon code from the `icon` URL, e.g. `rain_showers`), `is_day`, `short_forecast`. Old `weather.json` files still load (fields default). Real NWS reply checked (example gridpoint): codes present (`skc`, `few`, `sct`, `bkn`, `ovc`, `rain`, `tsra`).
+- `GET /weather?hours=N` (default 24, max 168): from the hour containing now; `[]` if never fetched.
+- Claude's choices, not discussed: the icon *code* is the key for choosing icons, not the `shortForecast` text (fixed list vs free text; text kept as a fallback); the first code when an hour lists two; the code→icon mapping is left to the display program.
+
+### Open
+
+- Display program: language/UI library, touch driver (kernel `ads7846` vs `/dev/spidev1.0`), NWS code → Meteocons mapping, animation approach.
+- Night screen: where its Done goes (assumed: back to set points, still pending).
+
