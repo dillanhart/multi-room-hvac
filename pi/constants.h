@@ -53,11 +53,12 @@ constexpr float WINTER_AVG_LOW = 55;   // average low below this: heating only
 constexpr float SUMMER_AVG_LOW = 65;   // average low above this: cooling only
 constexpr int WEATHER_DAYS = 7;                           // hourly forecast kept in weather.json
 constexpr int WEATHER_DEFAULT_HOURS = 24;                 // GET /weather with no ?hours=
-constexpr int WEATHER_FETCH_END_HOUR = 8;                 // fetch tries run midnight to 8 am, local time
-constexpr long long WEATHER_RETRY = 60 * 60;              // an hour between tries (Unix seconds)
+constexpr long long WEATHER_RETRY = 30;                   // seconds between tries until one succeeds (was an hour)
+constexpr int WEATHER_CHECK_SEC = 30;                     // how often the weather thread asks "is a fetch due?"
 constexpr int WEATHER_TIMEOUT_SEC = 30;                   // per connect / read; a hung NWS reply gives up
 constexpr int FULL_DAY_HOURS = 16;     // a date needs this many hours to count toward the average
-                                       // (a fetch up to 8 am still counts that day)
+                                       // (a fetch before 8 am still counts that day; a later one
+                                       // leaves today out and averages the days after it)
 
 // saved settings live next to the program on the Pi (~/thermostat, see deploy.sh)
 #define DATA_DIR "/home/thermostat/thermostat/"
@@ -69,8 +70,8 @@ constexpr const char* WEATHER_PATH = DATA_DIR "weather.json";
 constexpr int API_PORT = 8080;
 
 // history ring: one entry per control pass (CONTROL_INTERVAL), RAM only
-constexpr int CONTROL_INTERVAL = MIN;
-constexpr int HISTORY_SIZE = 24 * 60;      // 24 h at one a minute
+constexpr int CONTROL_INTERVAL = 20 * SEC;
+constexpr int HISTORY_SIZE = 24 * 60 * 60;      // 24 h at one a minute
 constexpr int SENSOR_COUNT = 3;            // nodes: main, office, bed
 constexpr const char* SENSOR_NAMES[SENSOR_COUNT] = {"main", "office", "bed"};   // nodes[0..2], also the API keys
 

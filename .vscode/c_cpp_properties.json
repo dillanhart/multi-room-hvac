@@ -12,6 +12,9 @@
             "includePath": [
                 "${workspaceFolder}/pi",
                 "${workspaceFolder}/pi/embedded-i2c-scd4x",
+                "${workspaceFolder}/pi/display",
+                "${workspaceFolder}/pi/display/lvgl",
+                "${workspaceFolder}/pi/display/lvgl/include",
                 "${workspaceFolder}/.sysroot/usr/include/c++/14",
                 "${workspaceFolder}/.sysroot/usr/include/aarch64-linux-gnu/c++/14",
                 "${workspaceFolder}/.sysroot/usr/include/c++/14/backward",
@@ -23,7 +26,8 @@
                 "__GNUC__=14",
                 "__GNUC_MINOR__=2",
                 "__linux__",
-                "__aarch64__"
+                "__aarch64__",
+                "LV_CONF_INCLUDE_SIMPLE"
             ]
         }
     ],

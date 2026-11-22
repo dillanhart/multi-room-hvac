@@ -4,3 +4,7 @@
 [submodule "tests/googletest"]
 	path = tests/googletest
 	url = https://github.com/google/googletest
+[submodule "pi/display/lvgl"]
+	path = pi/display/lvgl
+	url = https://github.com/lvgl/lvgl.git
+	shallow = true

@@ -125,14 +125,14 @@ static void control_loop(shared_state& shared, stop_signal& stop) {
 }
 
 /*
- * weather_loop - checks once a minute whether a fetch is due (weather_fetch_due);
+ * weather_loop - checks every WEATHER_CHECK_SEC whether a fetch is due (weather_fetch_due);
  * the fetch itself runs without the lock, so a slow NWS never holds up control or the API.
  */
 static void weather_loop(shared_state& shared, stop_signal& stop,
                          const std::string& gridpoint, const std::string& contact) {
     long long last_attempt = 0;
     for (;;) {
-        if (stop.wait_until(std::chrono::steady_clock::now() + std::chrono::minutes(1))) return;
+        if (stop.wait_until(std::chrono::steady_clock::now() + std::chrono::seconds(WEATHER_CHECK_SEC))) return;
         if (!clock_synced()) continue;   // the schedule is by local hour and date
 
         long long now_unix = time(nullptr);

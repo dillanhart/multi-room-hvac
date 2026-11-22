@@ -2,6 +2,10 @@
 pi/build/
 pi/thermostat_control
 pi/calibrate
+pi/display/build/
+pi/display/thermostat_display
+pi/display/display_preview
+pi/display/preview_out/
 *.o
 
 # reference material kept for lookup (datasheets, pinouts, sensor data), not part of the project

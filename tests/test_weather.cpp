@@ -93,31 +93,33 @@ TEST(OutsideTemp, HourContainingNow) {
     EXPECT_FALSE(outside_temp_at(w, 10800));   // past the data: gate skipped
 }
 
-// ---- fetch schedule: hourly tries, midnight to 8 am, until one works ----
+// ---- fetch schedule: once a day at any hour, a try every WEATHER_RETRY until one works ----
 
 TEST_F(Weather, NeverFetchedTriesAtAnyHour) {
     EXPECT_TRUE(weather_fetch_due({}, midnight(5) + 14 * 3600, 0));
 }
 
-TEST_F(Weather, TriesAnHourApart) {
+TEST_F(Weather, TriesRetryApart) {
     long long now = midnight(5) + 3 * 3600;
     weather_data yesterday{.fetched_at = midnight(4) + 3600, .hourly = {}};
     EXPECT_FALSE(weather_fetch_due(yesterday, now, now - WEATHER_RETRY + 1));
     EXPECT_TRUE(weather_fetch_due(yesterday, now, now - WEATHER_RETRY));
 }
 
-TEST_F(Weather, OnlyBetweenMidnightAndEight) {
+TEST_F(Weather, AnyHourOfANewDay) {
+    // missed the night (Pi off, NWS down): caught up during the day, not a day later
     weather_data yesterday{.fetched_at = midnight(4) + 3600, .hourly = {}};
     EXPECT_TRUE(weather_fetch_due(yesterday, midnight(5), 0));
-    EXPECT_TRUE(weather_fetch_due(yesterday, midnight(5) + 8 * 3600 - 1, 0));
-    EXPECT_FALSE(weather_fetch_due(yesterday, midnight(5) + 8 * 3600, 0));
-    EXPECT_FALSE(weather_fetch_due(yesterday, midnight(5) - 1, 0));   // 11:59 pm
+    EXPECT_TRUE(weather_fetch_due(yesterday, midnight(5) + 8 * 3600, 0));
+    EXPECT_TRUE(weather_fetch_due(yesterday, midnight(5) + 14 * 3600, 0));
+    EXPECT_TRUE(weather_fetch_due(yesterday, midnight(6) - 1, 0));    // 11:59 pm
 }
 
-TEST_F(Weather, SuccessEndsTonightsTries) {
-    weather_data today{.fetched_at = midnight(5) + 3600, .hourly = {}};
-    EXPECT_FALSE(weather_fetch_due(today, midnight(5) + 4 * 3600, 0));
-    EXPECT_TRUE(weather_fetch_due(today, midnight(6) + 3600, 0));     // next night
+TEST_F(Weather, SuccessEndsTodaysTries) {
+    weather_data today{.fetched_at = midnight(5) + 14 * 3600, .hourly = {}};   // 2 pm
+    EXPECT_FALSE(weather_fetch_due(today, midnight(5) + 15 * 3600, 0));
+    EXPECT_FALSE(weather_fetch_due(today, midnight(6) - 1, 0));
+    EXPECT_TRUE(weather_fetch_due(today, midnight(6), 0));            // next day
 }
 
 // a fetch as late as 7 am still makes today a full day (17 hours >= FULL_DAY_HOURS),
@@ -125,6 +127,14 @@ TEST_F(Weather, SuccessEndsTonightsTries) {
 TEST_F(Weather, SevenAmFetchCountsToday) {
     EXPECT_EQ(season_from_weather(week({30}, 7)), season::winter);
     EXPECT_EQ(season_from_weather(week({30}, 9)), season::unknown);   // 15 hours: left out
+}
+
+// a fetch at 2 pm (allowed since 11-21): today's partial day, missing its morning low,
+// is left out rather than lowering or raising the average; the days after it decide
+TEST_F(Weather, AfternoonFetchUsesTheDaysAfterToday) {
+    // today's 5 am low (30) is gone; its 2 pm-on hours are 45, which would read as shoulder
+    EXPECT_EQ(season_from_weather(week({30, 40, 40, 40}, 14)), season::winter);   // avg of 40s
+    EXPECT_EQ(season_from_weather(week({80, 40, 40, 40}, 14)), season::winter);   // today ignored either way
 }
 
 // ---- NWS reply ----

@@ -31,9 +31,8 @@ hvac_mode resolve_mode(hvac_mode setting, season s);
 // forecast temp for the hour containing now; nullopt if not covered (gate skipped)
 std::optional<float> outside_temp_at(const weather_data& w, long long now_unix);
 
-// time to try a fetch: at least WEATHER_RETRY since the last try, and either never
-// fetched, or between midnight and WEATHER_FETCH_END_HOUR with no success yet today
-// (local dates). last_attempt = 0 means no try yet.
+// time to try a fetch: at least WEATHER_RETRY since the last try, and no success yet
+// today (local dates), at any hour. last_attempt = 0 means no try yet.
 bool weather_fetch_due(const weather_data& w, long long now_unix, long long last_attempt);
 
 // the hours from an NWS /gridpoints/.../forecast/hourly reply: temp in F, plus the

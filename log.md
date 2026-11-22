@@ -699,3 +699,56 @@ Screens designed by the user (idea.md → Display screens). Backend by Claude. 2
 - Display program: language/UI library, touch driver (kernel `ads7846` vs `/dev/spidev1.0`), NWS code → Meteocons mapping, animation approach.
 - Night screen: where its Done goes (assumed: back to set points, still pending).
 
+
+## 2026-11-20 (later) — LVGL added for the display program
+
+Set up by Claude at the user's request. Built on Ubuntu (x86) only; not yet built on the Pi.
+
+- LVGL v9.6.0 (2026-09-16) as a shallow submodule, `pi/display/lvgl`. `lv_conf.h` in `pi/display/`: C library malloc (the built-in pool is a fixed 64 KB), printf logging, Montserrat 24/48, Linux fbdev driver. RGB565 is LVGL's default.
+- `pi/display/compile.py`: LVGL (550 files) → `build/liblvgl.a`, in parallel, rebuilt only on change. Ubuntu: 15 s for everything, 0.2 s with nothing changed.
+- `hello_lvgl.cpp`: toolchain check ("71" on `/dev/fb1` for 10 s), to be replaced by the real program.
+- `deploy.sh display-build` / `display-run`. Only LVGL's `src/`, `include/` and the top-level headers are synced (~23 MB of 203).
+- VS Code: LVGL include paths and `LV_CONF_INCLUDE_SIMPLE` added to `c_cpp_properties.json`.
+
+## 2026-11-21 — Display program written
+
+Screens designed by the user (idea.md → Display screens); program written by Claude at the user's request, built on the user's `display.cpp` / `display_constants.h` start (colours and screen names kept). 220 pass (18 new) + 11 relay. **Built and previewed on Ubuntu only; not yet run on the Pi.**
+
+- `pi/display/`: `display.cpp` (main loop, console → graphics mode, SIGTERM/SIGINT), `ui.cpp` (screens), `api_client.cpp` (worker thread), `touch.cpp` (XPT2046 on `/dev/spidev1.0`, GPIO 16 pen-down), `display_logic.cpp` (unit tested).
+- Assets: 31 Meteocons *fill* Lottie icons (MIT, `@meteocons/lottie` 3.0.0-next.10, 504 KB) and Montserrat TTF (OFL), licences alongside. LVGL now also builds ThorVG (Lottie) and Tiny TTF.
+- `compile.py --preview`: renders all screens to `preview_out/` with fake data and scripted taps, checks the flow (screens reached, Done sends the right body, 30 s timeout sends nothing). Layout checked by eye from these.
+- API worker tested against a fake server on localhost (ThreadSanitizer: clean): GET all four, past forecast hour dropped, Done → PUT `/setpoints` + PUT `/fan` then refresh; control program down → N/A after 3 min, errors logged once.
+- Found with ASan: LVGL's Lottie widget uses its buffer in its destructor, after `LV_EVENT_DELETE`; the buffer is now freed one cycle later. LVGL 9.6.0 bug, harmless: `lv_canvas_destructor` drops `&canvas->draw_buf` from the image cache, logging "invalid magic" when a forecast page closes.
+- Claude's choices, not discussed: main forecast = the hour containing now (`MAIN_FORECAST_INDEX`); forecast's first column says "Now"; untrusted main reading → N/A (as control ignores it); N/A in 44 px so both halves' N/As fit; temp half does nothing until set points have been fetched; Done colour light blue-grey (144,164,174); "Night difference" caption on the night screen; night Done → back to set points (pending); arrows step 1°, refused at a limit with no message; buttons have a 4 px larger tap area; `Button` struct in `display_constants.h` replaced (wouldn't compile against LVGL 9).
+
+### Open
+
+- First run on the Pi: touch calibration and filtering untested; check Lottie CPU / SPI load (`ANIMATE_ICONS = false` to compare).
+- Console switch (`KDSETMODE`) needs root or `CAP_SYS_TTY_CONFIG`; `/dev/fb1`, `spidev`, `gpiochip0` need the `video`, `spi`, `gpio` groups.
+- systemd unit for the display program (with `ExecStopPost=` restoring the console).
+
+## 2026-11-21 (later) — Weather fetch at any hour
+
+Bug found by the user; fix chosen by the user (option 1 of 3), code by Claude. 221 pass + 11 relay.
+
+- **Bug:** fetch tries ran only 00:00–07:59. A night with the Pi off or NWS down meant no new forecast until the next midnight: the display's forecast up to two days old.
+- **Fix:** still once a day (first success per local date), hourly retries, but at any hour. `WEATHER_FETCH_END_HOUR` removed.
+- Season unaffected by a late fetch: hours already past are dropped, so after ~8 am today has < 16 hours and is left out (`FULL_DAY_HOURS`); the average uses the days after it. New test `AfternoonFetchUsesTheDaysAfterToday`.
+- Not chosen: hourly forecast refresh for the display with the season updated once a day (needs separate storage); daily low from 00:00–08:00 only.
+
+## 2026-11-21 (later) — Faster weather pick-up; blank forecast instead of N/A
+
+User's request, code by Claude. 221 pass + 11 relay; preview OK. Not yet run on the Pi.
+
+- Control: the weather thread checks for a due fetch every 30 s (`WEATHER_CHECK_SEC`, was 60). Nothing in control needs 60: the check is a clock comparison, and NWS requests stay one an hour at most (`WEATHER_RETRY`).
+- Display: forecast polled every 30 s while it has none (`WEATHER_EMPTY_POLL_MS`), every 5 min once it has one. Checked against a fake API: 2 forecast requests in 40 s while empty.
+- Display: no forecast → that half is blank (main and forecast pages; arrows and Done stay). No room temp → N/A, back to the 76 px font now that it doesn't share the row with a second N/A.
+
+## 2026-11-21 (later) — Weather retry every 30 s; gridpoint 404
+
+Found by the user on the Pi; retry change by the user, code by Claude. 221 pass + 11 relay.
+
+- No forecast on the display: `./thermostat_control` run directly doesn't load `thermostat.env` (only `compile.py` does) → "GRIDPOINT / _CONTACT not set". Then HTTP 404: the gridpoint still had the example's `XXX` office (should be `SLC/…`).
+- `WEATHER_RETRY` 1 h → 30 s (user): a failed fetch is retried every 30 s until one succeeds, then nothing until the next day. A single failure at boot (network not up yet) no longer means an hour without a forecast.
+- Side effect: a fetch that keeps failing (bad gridpoint, NWS down) is now ~120 requests and log lines an hour.
+

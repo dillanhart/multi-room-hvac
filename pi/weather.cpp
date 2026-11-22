@@ -60,18 +60,12 @@ static int local_date(long long unix_time) {
     return (tm.tm_year + 1900) * 1000 + tm.tm_yday;
 }
 
-static int local_hour(long long unix_time) {
-    std::time_t t = unix_time;
-    std::tm tm{};
-    localtime_r(&t, &tm);
-    return tm.tm_hour;
-}
-
 bool weather_fetch_due(const weather_data& w, long long now_unix, long long last_attempt) {
     if (last_attempt != 0 && now_unix - last_attempt < WEATHER_RETRY) return false;
-    if (w.fetched_at == 0) return true;   // fresh install: don't wait for midnight
-    return local_hour(now_unix) < WEATHER_FETCH_END_HOUR &&
-           local_date(w.fetched_at) != local_date(now_unix);
+    // once a day, at any hour: a night with no network (or the Pi off) is caught up the next
+    // morning, not a day later. A fetch after 8 am doesn't skew the season: today has too
+    // few hours left to count (FULL_DAY_HOURS), so the average uses the days after it.
+    return w.fetched_at == 0 || local_date(w.fetched_at) != local_date(now_unix);
 }
 
 std::optional<long long> parse_iso8601(const std::string& text) {

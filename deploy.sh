@@ -5,6 +5,8 @@
 #   ./deploy.sh diff     show what a push would change, change nothing
 #   ./deploy.sh build    push, then build on the Pi without running (checks libraries/compile errors)
 #   ./deploy.sh run      push, then build and run (compile.py) on the Pi; Ctrl-C stops it
+#   ./deploy.sh display-build   push, then build the display program on the Pi (pi/display/compile.py)
+#   ./deploy.sh display-run     push, then build and run it; Ctrl-C stops it
 #   ./deploy.sh sysroot  copy the Pi's headers into .sysroot/ so VS Code checks against the Pi;
 #                        rerun after installing a -dev package on the Pi
 #
@@ -22,6 +24,10 @@ SRC="$ROOT/pi/"
 RSYNC=(rsync -az --delete --itemize-changes
        --exclude=/build/ --exclude=/thermostat_control --exclude=/calibrate
        --exclude=/hvac_points.json --exclude=/vacation.json --exclude=/weather.json --exclude='/*.json.tmp'
+       --exclude=/display/build/ --exclude=/display/thermostat_display
+       --exclude=/display/display_preview --exclude=/display/preview_out/
+       # LVGL: the Pi needs only src/, include/ and the top-level headers (~30 MB of ~200)
+       --exclude=/display/lvgl/{docs,demos,examples,tests,scripts,env_support,libs,configs,zephyr,sbom}/
        --exclude=.git)
 
 case "${1:-push}" in
@@ -31,6 +37,12 @@ case "${1:-push}" in
            ssh "$HOST" "cd $DEST && python3 compile.py --no-run" ;;
     run)   "${RSYNC[@]}" "$SRC" "$HOST:$DEST"
            ssh -t "$HOST" "cd $DEST && python3 compile.py" ;;
+    display-build)
+           "${RSYNC[@]}" "$SRC" "$HOST:$DEST"
+           ssh "$HOST" "cd $DEST/display && python3 compile.py --no-run" ;;
+    display-run)
+           "${RSYNC[@]}" "$SRC" "$HOST:$DEST"
+           ssh -t "$HOST" "cd $DEST/display && python3 compile.py" ;;
     sysroot)
            # the Pi compiler's include search paths (g++ -E -v), mirrored at the same paths;
            # /usr/lib/linux/uapi is where Debian's asm/* header symlinks point
@@ -40,5 +52,5 @@ case "${1:-push}" in
                "$HOST:/usr/lib/gcc/aarch64-linux-gnu/14/include" \
                "$HOST:/usr/lib/linux/uapi" \
                "$ROOT/.sysroot/" ;;
-    *)     echo "usage: $0 [push|diff|build|run|sysroot]" >&2; exit 1 ;;
+    *)     echo "usage: $0 [push|diff|build|run|display-build|display-run|sysroot]" >&2; exit 1 ;;
 esac

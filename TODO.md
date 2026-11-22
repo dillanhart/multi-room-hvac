@@ -43,7 +43,9 @@ Tests: `python3 tests/run_tests.py`. A failing or `DISABLED_` test is named next
 
 - ~~SPI clock is 8 MHz in `config.txt`; the old ILI9341 ran at 32 MHz. Raise it for the ST7789V.~~ Done 11-20 (user): 32 MHz.
 - Idle blanking unverified with `backlight-gpio` bound.
-- Touch filtering: stray 4095 / low reads at touch-down and lift (TI SBAA036; pressure from X, Z1, Z2).
-- Touch calibration: swap axes for landscape, map raw ~430-3650 to screen pixels. Reverses if the display is flipped 180°.
-- Touch driver: kernel `ads7846` overlay (SPI0 only?) needs a custom SPI1 overlay, or read `/dev/spidev1.0` from the display program.
+- ~~Touch filtering: stray 4095 / low reads at touch-down and lift (TI SBAA036; pressure from X, Z1, Z2).~~ Written 11-21 (median of 7, range + spread check, two agreeing reads before a press). **Untested on the Pi.**
+- ~~Touch calibration: swap axes for landscape, map raw ~430-3650 to screen pixels. Reverses if the display is flipped 180°.~~ Written 11-21 from the corner table (`TOUCH_CAL`). **Untested on the Pi**; tune if taps land off-target.
+- ~~Touch driver: kernel `ads7846` overlay (SPI0 only?) needs a custom SPI1 overlay, or read `/dev/spidev1.0` from the display program.~~ 11-21: userspace, `/dev/spidev1.0` + GPIO 16 via libgpiod.
+- Display program first run on the Pi: `./deploy.sh display-run` (as root for the console switch, or see log.md 11-21). First LVGL build is long; watch RAM.
+- Display: a Done pressed while the control program is down is logged and lost (no retry). Decide if that's OK.
 - Decide: pushbuttons as a touch fallback, or none (not yet purchased).

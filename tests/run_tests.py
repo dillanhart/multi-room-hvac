@@ -23,14 +23,15 @@ BUILD = os.path.join(HERE, "build")
 # binary name -> (code under test from pi/, test files and fakes from tests/)
 BINARIES = {
     "unit_tests": (["control.cpp", "validation.cpp", "data_store.cpp", "weather.cpp",
-                    "history.cpp", "thermostat.cpp", "api.cpp"],
+                    "history.cpp", "thermostat.cpp", "api.cpp", "display/display_logic.cpp"],
                    ["fake_relay.cpp", "test_validation.cpp", "test_control.cpp",
-                    "test_data_store.cpp", "test_weather.cpp", "test_history.cpp", "test_api.cpp"]),
+                    "test_data_store.cpp", "test_weather.cpp", "test_history.cpp", "test_api.cpp",
+                    "test_display_logic.cpp"]),
     "relay_tests": (["relay.cpp"],
                     ["fake_gpiod.cpp", "test_relay.cpp"]),
 }
 
-CXXFLAGS = ["-Wall", "-std=c++20", "-g", "-I" + PI, "-I" + HERE, "-I" + os.path.join(HERE, "gpiod"),
+CXXFLAGS = ["-Wall", "-std=c++20", "-g", "-I" + PI, "-I" + os.path.join(PI, "display"), "-I" + HERE, "-I" + os.path.join(HERE, "gpiod"),
             "-isystem", os.path.join(GTEST, "include")]
 
 os.makedirs(BUILD, exist_ok=True)
