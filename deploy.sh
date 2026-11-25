@@ -7,8 +7,14 @@
 #   ./deploy.sh run      push, then build and run (compile.py) on the Pi; Ctrl-C stops it
 #   ./deploy.sh display-build   push, then build the display program on the Pi (pi/display/compile.py)
 #   ./deploy.sh display-run     push, then build and run it; Ctrl-C stops it
+#   ./deploy.sh services   push, then install the systemd units (pi/systemd/), enable them and
+#                          (re)start both programs; asks for the Pi's sudo password.
+#                          Rerun after a build to restart with the new binaries.
 #   ./deploy.sh sysroot  copy the Pi's headers into .sysroot/ so VS Code checks against the Pi;
 #                        rerun after installing a -dev package on the Pi
+#
+# While the services run, stop them before run / display-run (the relay pins and the panel
+# can't be shared):  ssh -t thermostat@thermostat sudo systemctl stop thermostat thermostat-display
 #
 # pi/ here is the source of truth: files deleted here are deleted on the Pi.
 # Build output and binaries are excluded, so they are never sent or deleted.
@@ -43,6 +49,13 @@ case "${1:-push}" in
     display-run)
            "${RSYNC[@]}" "$SRC" "$HOST:$DEST"
            ssh -t "$HOST" "cd $DEST/display && python3 compile.py" ;;
+    services)
+           "${RSYNC[@]}" "$SRC" "$HOST:$DEST"
+           ssh -t "$HOST" "sudo cp $DEST/systemd/*.service /etc/systemd/system/ &&
+                           sudo systemctl daemon-reload &&
+                           sudo systemctl enable thermostat.service thermostat-display.service &&
+                           sudo systemctl restart thermostat.service thermostat-display.service &&
+                           systemctl --no-pager status thermostat.service thermostat-display.service" ;;
     sysroot)
            # the Pi compiler's include search paths (g++ -E -v), mirrored at the same paths;
            # /usr/lib/linux/uapi is where Debian's asm/* header symlinks point
@@ -52,5 +65,5 @@ case "${1:-push}" in
                "$HOST:/usr/lib/gcc/aarch64-linux-gnu/14/include" \
                "$HOST:/usr/lib/linux/uapi" \
                "$ROOT/.sysroot/" ;;
-    *)     echo "usage: $0 [push|diff|build|run|display-build|display-run|sysroot]" >&2; exit 1 ;;
+    *)     echo "usage: $0 [push|diff|build|run|display-build|display-run|services|sysroot]" >&2; exit 1 ;;
 esac

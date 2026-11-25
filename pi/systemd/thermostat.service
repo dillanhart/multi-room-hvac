@@ -1,0 +1,29 @@
+# Thermostat control program. Install: ./deploy.sh services (copies to /etc/systemd/system/).
+#
+# Watchdog: main.cpp pings after every control pass (CONTROL_INTERVAL, 20 s). No ping for
+# WatchdogSec (3 passes) = hung: systemd kills it (SIGABRT) and Restart= starts it again.
+# Relays off after any exit, kill -9 included, comes from the kernel, not from this unit:
+# pinctrl_bcm2835.persist_gpio_outputs=n in /boot/firmware/cmdline.txt (see README).
+#
+# A restart keeps min-off: a fresh start waits the full min-off before heat/cool.
+
+[Unit]
+Description=Thermostat control program
+After=network.target
+# never give up restarting (default: stop after 5 starts in 10 s)
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+User=thermostat
+WorkingDirectory=/home/thermostat/thermostat
+EnvironmentFile=-/home/thermostat/thermostat/thermostat.env
+ExecStart=/home/thermostat/thermostat/thermostat_control
+Restart=always
+RestartSec=5
+WatchdogSec=60
+# a weather fetch in progress may hold up a clean stop by WEATHER_TIMEOUT_SEC (30 s)
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target

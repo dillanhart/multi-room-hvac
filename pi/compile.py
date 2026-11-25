@@ -53,9 +53,11 @@ for src in CPP_SOURCES:
         subprocess.run(["g++", "-Wall", "-std=c++20", "-I" + SCD4X, "-c", src, "-o", obj_path(src)], check=True)
 
 # Link with g++ so the C++ standard library is included.
-# -lssl -lcrypto: HTTPS for the weather fetch; -pthread: the control/weather/API threads
+# -lssl -lcrypto: HTTPS for the weather fetch; -pthread: the control/weather/API threads;
+# -lsystemd: sd_notify (libsystemd-dev)
 objects = [obj_path(src) for src in C_SOURCES + CPP_SOURCES]
-subprocess.run(["g++", "-pthread", "-o", "thermostat_control", *objects, "-lgpiod", "-lssl", "-lcrypto"],
+subprocess.run(["g++", "-pthread", "-o", "thermostat_control", *objects, "-lgpiod", "-lssl", "-lcrypto",
+                "-lsystemd"],
                check=True)
 
 

@@ -1,0 +1,26 @@
+# Thermostat touchscreen. Install: ./deploy.sh services (copies to /etc/systemd/system/).
+#
+# Independent of the control program: it shows N/A while the API is unreachable, so
+# After= only orders the start, and a display crash never touches control.
+# Watchdog: display.cpp pings once a second from the LVGL loop; no ping for 15 s = frozen.
+
+[Unit]
+Description=Thermostat touchscreen
+After=thermostat.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+User=thermostat
+WorkingDirectory=/home/thermostat/thermostat/display
+# KDSETMODE on the console: /dev/tty1 is root-only (0600), and the ioctl needs
+# CAP_SYS_TTY_CONFIG. "+" runs the chown as root; video/spi/gpio come from the user's groups.
+ExecStartPre=+/bin/chown thermostat /dev/tty1
+AmbientCapabilities=CAP_SYS_TTY_CONFIG
+ExecStart=/home/thermostat/thermostat/display/thermostat_display
+Restart=always
+RestartSec=2
+WatchdogSec=15
+
+[Install]
+WantedBy=multi-user.target

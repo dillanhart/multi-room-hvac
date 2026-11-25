@@ -12,8 +12,8 @@ Tests: `python3 tests/run_tests.py`. A failing or `DISABLED_` test is named next
 
 - Progress check (HVAC running but room temps not moving): `PROGRESS_WINDOW` / `PROGRESS_MIN_DELTA` defined but unused. Held until after bench tests. Feeds a planned `error` status with auto-retry (30-60 min, longer than min-off); thresholds scaled by outdoor temp from the weather API.
 - `fails_in_row` / `MAX_SENSOR_FAILS` unused.
-- Software watchdog (systemd `WatchdogSec`): a hung loop holds a relay closed past max-run.
-- Relay state after `kill -9` / a crash while energized is untested (clean SIGTERM/SIGINT now turns every relay off). Planned: a separate watcher program that turns the pins off when the control program exits; it can only claim the pins after the program has released them.
+- ~~Software watchdog (systemd `WatchdogSec`): a hung loop holds a relay closed past max-run.~~ Written 11-25 (`sd_notify` per pass, `WatchdogSec=60`). **Untested**: freeze the loop (e.g. `kill -STOP`) with the fan on, expect a kill + restart within ~60 s and the relay off.
+- ~~Relay state after `kill -9` / a crash while energized is untested.~~ Tested 11-25 (user): **relay stays on**. Need something that turns the pins off after any exit (relay-off helper on `ExecStopPost=`, or a watcher). Fixed 11-25: `pinctrl_bcm2835.persist_gpio_outputs=n` in `cmdline.txt` → released pins revert to input, relay off on `kill -9` (verified). Not in the repo: redo after a reflash.
 - Setpoint validation: `MIN_DEAD_BAND`, and `ac_set` < `MIN_HEAT` so em heat can't be called while cooling.
 - Heat ↔ cool skipping min-on (by design): comment it in `test_switch`, log it when it happens.
 
@@ -37,7 +37,7 @@ Tests: `python3 tests/run_tests.py`. A failing or `DISABLED_` test is named next
 - Satellite polling: map ESP32 `"status"` to `sensor_status`, then `update_node(nodes[1..2], …)` in `control_loop`, outside the lock. Until then they're null in the API and left out of the averages.
 - `SUMMER_AVG_LOW` (65) is a first guess (user: 60-65); tune after a season.
 - Install `nlohmann-json3-dev` on the Pi if a rebuild ever needs it (present in `.sysroot` as of 11-17).
-- Web apps (Ubuntu site, display program). systemd unit (`EnvironmentFile=thermostat.env`, `WatchdogSec`).
+- Web apps (Ubuntu site, display program). ~~systemd unit (`EnvironmentFile=thermostat.env`, `WatchdogSec`).~~ Written 11-25: `pi/systemd/`.
 
 ## Display and touch
 

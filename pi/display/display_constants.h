@@ -52,6 +52,7 @@ constexpr int READING_MAX_AGE_MS = 3 * 60 * 1000;     // older than this (API un
 // ---- hardware
 constexpr const char* FRAMEBUFFER = "/dev/fb1";
 constexpr const char* CONSOLE_TTY = "/dev/tty1";      // switched to graphics mode while running
+constexpr uint32_t WATCHDOG_PING_MS = 1000;           // systemd watchdog ping; WatchdogSec= in the unit is 15 s
 constexpr const char* TOUCH_SPI = "/dev/spidev1.0";
 constexpr uint32_t TOUCH_SPI_HZ = 1000000;            // XPT2046 max is ~2 MHz
 constexpr const char* GPIO_CHIP = "/dev/gpiochip0";

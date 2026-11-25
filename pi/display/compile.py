@@ -22,7 +22,7 @@ BUILD = "build"
 # program -> (our sources, extra libraries)
 TARGETS = {
     "thermostat_display": (["display.cpp", "ui.cpp", "api_client.cpp", "touch.cpp", "display_logic.cpp"],
-                           ["-lgpiod"]),
+                           ["-lgpiod", "-lsystemd"]),
     # desktop check: no touch.cpp (libgpiod), no display.cpp (framebuffer)
     "display_preview": (["preview.cpp", "ui.cpp", "api_client.cpp", "display_logic.cpp"], []),
 }

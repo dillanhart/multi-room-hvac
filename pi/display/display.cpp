@@ -10,6 +10,8 @@
  *
  * Build and run on the Pi: python3 compile.py (or ./deploy.sh display-run).
  * SIGTERM / SIGINT: stops cleanly and gives the console back.
+ * As a service (../systemd/thermostat-display.service) the main loop pings the systemd
+ * watchdog once a second; a frozen loop stops the pings and systemd restarts the program.
  */
 
 #include "lvgl.h"
@@ -26,6 +28,7 @@
 #include <linux/kd.h>     // KDSETMODE, KD_GRAPHICS, KD_TEXT
 #include <string>
 #include <sys/ioctl.h>
+#include <systemd/sd-daemon.h>   // sd_notify: readiness and watchdog pings
 #include <unistd.h>
 
 static volatile sig_atomic_t stop_requested = 0;
@@ -81,6 +84,9 @@ static void read_touch(lv_indev_t* indev, lv_indev_data_t* data) {
 }
 
 int main() {
+    // under systemd stdout is a pipe (fully buffered): flush each line so the journal is live
+    setvbuf(stdout, nullptr, _IOLBF, 0);
+
     struct sigaction sa{};
     sa.sa_handler = on_signal;
     sigaction(SIGTERM, &sa, nullptr);
@@ -110,14 +116,22 @@ int main() {
     api_client api;
     api.start();
     ui_start(api, asset_dir());
+    sd_notify(0, "READY=1");
 
     // LVGL draws inside lv_timer_handler(), which says how long until it needs a call
+    uint32_t last_ping = 0;
     while (!stop_requested) {
         uint32_t wait = lv_timer_handler();
+        // the loop runs ~30 times a second; once a second is plenty for the watchdog
+        if (now_ms() - last_ping >= WATCHDOG_PING_MS) {
+            sd_notify(0, "WATCHDOG=1");
+            last_ping = now_ms();
+        }
         usleep((wait > 33 ? 33 : wait) * 1000);
     }
 
     std::printf("display: stopping\n");
+    sd_notify(0, "STOPPING=1");
     api.stop();
     touch.close();
     console_to_text(tty);

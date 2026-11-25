@@ -19,6 +19,13 @@
  *
  * Build: python3 compile.py
  * Run:   ./thermostat_control   (user must be in the "gpio" group)
+ *        or as a service: systemd/thermostat.service (./deploy.sh services)
+ *
+ * systemd watchdog: the control loop pings systemd after every pass. If the pings stop
+ * (a hung pass) systemd kills the program and restarts it. The relays then fall off on
+ * their own: with pinctrl_bcm2835.persist_gpio_outputs=n (cmdline.txt) a released pin
+ * reverts to input and the pull-ups hold the active-low board off. Run by hand,
+ * sd_notify() does nothing (NOTIFY_SOCKET isn't set).
  * Env:   THERMOSTAT_NWS_GRIDPOINT ("BOU/62,60" style) and THERMOSTAT_NWS_CONTACT
  *        (email or URL for the NWS User-Agent); compile.py loads them from thermostat.env
  */
@@ -35,6 +42,7 @@
 #include <vector>
 #include <pthread.h>        // pthread_sigmask
 #include <sys/timex.h>      // ntp_adjtime
+#include <systemd/sd-daemon.h>   // sd_notify: readiness and watchdog pings
 
 #include "constants.h"
 #include "control.h"
@@ -117,6 +125,8 @@ static void control_loop(shared_state& shared, stop_signal& stop) {
         was_synced = synced;
 
         control_tick(shared, nodes, now, time(nullptr), is_night_now(), synced);
+        // after the pass, so a pass stuck on the lock or a sensor stops the pings
+        sd_notify(0, "WATCHDOG=1");
 
         // a pass that ran late (or a suspended clock) doesn't cause a burst of catch-up passes
         next = std::max(next + std::chrono::milliseconds(CONTROL_INTERVAL), std::chrono::steady_clock::now());
@@ -171,6 +181,8 @@ int main() {
     sigaddset(&stop_signals, SIGINT);
     pthread_sigmask(SIG_BLOCK, &stop_signals, nullptr);
     std::signal(SIGPIPE, SIG_IGN);   // a client hanging up mid-reply mustn't kill the program
+    // under systemd stdout is a pipe (fully buffered): flush each line so the journal is live
+    setvbuf(stdout, nullptr, _IOLBF, 0);
 
     shared_state shared;
     load_settings(shared.settings);
@@ -196,10 +208,12 @@ int main() {
     // the thermostat runs without the API if the port is taken
     api_server server(shared);
     server.start(API_PORT);
+    sd_notify(0, "READY=1");
 
     int sig = 0;
     sigwait(&stop_signals, &sig);
     std::printf("signal %d: stopping\n", sig);
+    sd_notify(0, "STOPPING=1");
 
     server.stop();
     stop.stop();

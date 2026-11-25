@@ -752,3 +752,35 @@ Found by the user on the Pi; retry change by the user, code by Claude. 221 pass 
 - `WEATHER_RETRY` 1 h → 30 s (user): a failed fetch is retried every 30 s until one succeeds, then nothing until the next day. A single failure at boot (network not up yet) no longer means an hour without a forecast.
 - Side effect: a fetch that keeps failing (bad gridpoint, NWS down) is now ~120 requests and log lines an hour.
 
+
+## 2026-11-25 — kill -9 leaves the relay on
+
+Test by the user on the Pi.
+
+- Fan on (`PUT /fan`), then `kill -9` of `./thermostat_control` → **fan relay stayed on**. The kernel keeps a released line driving its last value; SIGKILL skips `relays_close()`.
+- A crash, `kill -9` or watchdog kill while energized holds that relay closed until something reclaims the pins (a restart's `relays_init()` sets all off).
+- `pkill -x thermostat_control` matches nothing: process names are cut to 15 chars (`thermostat_cont`). Use the PID or `pkill -f '^\./thermostat_control'`.
+- Hang detection, decided by the user: a per-pass signal from the control loop. Not the history ring's timestamp: the ring is written only once the clock has synced, so a Pi without NTP would look hung.
+
+Open: deliver the signal by `sd_notify` + `WatchdogSec` or by an external poller; relay-off helper on `ExecStopPost=`; display watchdog on its LVGL loop.
+
+## 2026-11-25 (later) — Kernel releases relays on exit
+
+Test by the user on the Pi.
+
+- `persist_gpio_outputs` (pinctrl_bcm2835) is read-only at runtime → `pinctrl_bcm2835.persist_gpio_outputs=n` added to `/boot/firmware/cmdline.txt` (backup: `cmdline.txt.bak`), rebooted.
+- Same test (fan on, `kill -9`) → **relay turned off at the kill**. A released line reverts to input; the GPIO4–6 pull-ups hold the active-low board off.
+- Covers any exit (crash, `kill -9`, watchdog kill). Not a hang: the process still holds the pins.
+- Pi setup outside the repo: a reflashed SD card loses it.
+
+Open: `ExecStopPost=` relay-off as a second layer, or skip; per-pass signal delivery; display watchdog.
+
+## 2026-11-25 (later) — systemd services and watchdog
+
+Design by the user (per-pass signal via `sd_notify`, no `ExecStopPost=`, display restarts too); code by Claude. 221 pass + 11 relay; both build on the Pi, units pass `systemd-analyze verify`. **Services not yet installed or tested.**
+
+- `pi/systemd/thermostat.service`: `Type=notify`, `Restart=always`, `WatchdogSec=60` (3 × 20 s passes), never gives up (`StartLimitIntervalSec=0`). `main.cpp` pings `WATCHDOG=1` after every `control_tick` (a pass stuck on the lock or a sensor stops the pings).
+- `pi/systemd/thermostat-display.service`: same, `WatchdogSec=15`, ping once a second from the LVGL loop. `/dev/tty1` is root-only → `ExecStartPre=+chown` and `CAP_SYS_TTY_CONFIG`.
+- Relays off on a watchdog kill come from `persist_gpio_outputs=n`, not the unit.
+- Restart keeps min-off: a crash loop means no heat/cool; the Honeywell on W covers freezing.
+- stdout line-buffered in both programs (journal is a pipe). `./deploy.sh services` installs, enables, restarts. Links `-lsystemd`.
